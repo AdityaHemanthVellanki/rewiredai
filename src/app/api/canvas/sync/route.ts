@@ -1,9 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
-import {
-  fetchCanvasCourses,
-  fetchCanvasAssignments,
-  getValidCanvasToken,
-} from "@/lib/canvas";
+import { fetchCanvasCourses, fetchCanvasAssignments } from "@/lib/canvas";
 import { NextResponse } from "next/server";
 
 // Sync courses and assignments from Canvas LMS
@@ -31,35 +27,12 @@ export async function POST() {
     );
   }
 
-  // Refresh token if needed
-  let accessToken = canvasConn.access_token;
-  try {
-    const result = await getValidCanvasToken(
-      canvasConn.access_token,
-      canvasConn.refresh_token,
-      canvasConn.token_expires_at ? new Date(canvasConn.token_expires_at) : null
-    );
-    accessToken = result.accessToken;
-
-    if (result.refreshed && result.expiresAt) {
-      await supabase
-        .from("canvas_connections")
-        .update({
-          access_token: result.accessToken,
-          token_expires_at: result.expiresAt.toISOString(),
-        })
-        .eq("id", canvasConn.id);
-    }
-  } catch {
-    return NextResponse.json(
-      { error: "Canvas token expired. Please reconnect Canvas." },
-      { status: 401 }
-    );
-  }
+  const baseUrl = canvasConn.canvas_base_url;
+  const token = canvasConn.api_token;
 
   try {
     // 1. Fetch courses from Canvas
-    const canvasCourses = await fetchCanvasCourses(accessToken);
+    const canvasCourses = await fetchCanvasCourses(baseUrl, token);
 
     let coursesCreated = 0;
     let assignmentsCreated = 0;
@@ -101,7 +74,8 @@ export async function POST() {
       // 2. Fetch assignments for each course
       try {
         const canvasAssignments = await fetchCanvasAssignments(
-          accessToken,
+          baseUrl,
+          token,
           cc.id
         );
 

@@ -64,14 +64,13 @@ create table if not exists google_accounts (
   created_at timestamptz default now()
 );
 
--- Canvas LMS connections (OAuth tokens from Canvas)
+-- Canvas LMS connections (personal access token)
+-- Students generate tokens at: Canvas → Account → Settings → New Access Token
 create table if not exists canvas_connections (
   id uuid primary key default gen_random_uuid(),
   user_id uuid references profiles(id) on delete cascade not null unique,
   canvas_base_url text not null,
-  access_token text not null,
-  refresh_token text,
-  token_expires_at timestamptz,
+  api_token text not null,
   student_name text,
   last_synced_at timestamptz,
   created_at timestamptz default now()
@@ -231,43 +230,57 @@ alter table email_summaries enable row level security;
 alter table agent_activity_log enable row level security;
 
 -- Profiles: users can read/update their own profile
+drop policy if exists "Users can view own profile" on profiles;
 create policy "Users can view own profile" on profiles for select using (auth.uid() = id);
+drop policy if exists "Users can update own profile" on profiles;
 create policy "Users can update own profile" on profiles for update using (auth.uid() = id);
 
 -- Google accounts: users manage their own
+drop policy if exists "Users can manage own google accounts" on google_accounts;
 create policy "Users can manage own google accounts" on google_accounts for all using (auth.uid() = user_id);
 
 -- Canvas connections
+drop policy if exists "Users can manage own canvas connections" on canvas_connections;
 create policy "Users can manage own canvas connections" on canvas_connections for all using (auth.uid() = user_id);
 
 -- Courses
+drop policy if exists "Users can manage own courses" on courses;
 create policy "Users can manage own courses" on courses for all using (auth.uid() = user_id);
 
 -- Assignments
+drop policy if exists "Users can manage own assignments" on assignments;
 create policy "Users can manage own assignments" on assignments for all using (auth.uid() = user_id);
 
 -- Grades
+drop policy if exists "Users can manage own grades" on grades;
 create policy "Users can manage own grades" on grades for all using (auth.uid() = user_id);
 
 -- Study Blocks
+drop policy if exists "Users can manage own study blocks" on study_blocks;
 create policy "Users can manage own study blocks" on study_blocks for all using (auth.uid() = user_id);
 
 -- Chat Messages
+drop policy if exists "Users can manage own chat messages" on chat_messages;
 create policy "Users can manage own chat messages" on chat_messages for all using (auth.uid() = user_id);
 
 -- Agent Memory
+drop policy if exists "Users can manage own agent memory" on agent_memory;
 create policy "Users can manage own agent memory" on agent_memory for all using (auth.uid() = user_id);
 
 -- Nudges
+drop policy if exists "Users can manage own nudges" on nudges;
 create policy "Users can manage own nudges" on nudges for all using (auth.uid() = user_id);
 
 -- Mood Entries
+drop policy if exists "Users can manage own mood entries" on mood_entries;
 create policy "Users can manage own mood entries" on mood_entries for all using (auth.uid() = user_id);
 
 -- Email Summaries
+drop policy if exists "Users can manage own email summaries" on email_summaries;
 create policy "Users can manage own email summaries" on email_summaries for all using (auth.uid() = user_id);
 
 -- Agent Activity Log
+drop policy if exists "Users can view own agent activity" on agent_activity_log;
 create policy "Users can view own agent activity" on agent_activity_log for all using (auth.uid() = user_id);
 
 -- ============================================

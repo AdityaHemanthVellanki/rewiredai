@@ -17,13 +17,53 @@ export async function POST() {
   const accessToken = await getGoogleAccessToken(user.id);
   if (!accessToken) {
     return NextResponse.json(
-      { error: "Google account not connected. Please log in again with Google." },
+      {
+        error:
+          "Google token expired or missing. Please log out and log back in with Google.",
+      },
       { status: 400 }
     );
   }
 
   // Fetch emails
-  const emails = await fetchRecentEmails(accessToken, 20);
+  let emails;
+  try {
+    emails = await fetchRecentEmails(accessToken, 20);
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : "Failed to fetch emails";
+
+    // Common: Gmail API not enabled in Google Cloud Console
+    if (message.includes("403") || message.includes("Forbidden")) {
+      return NextResponse.json(
+        {
+          error:
+            "Gmail API access denied. Make sure the Gmail API is enabled in your Google Cloud Console.",
+        },
+        { status: 403 }
+      );
+    }
+
+    if (message.includes("401") || message.includes("Unauthorized")) {
+      return NextResponse.json(
+        {
+          error:
+            "Google token expired. Please log out and log back in with Google.",
+        },
+        { status: 401 }
+      );
+    }
+
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+
+  if (!emails.length) {
+    return NextResponse.json({
+      processed: 0,
+      summaries: [],
+      debug: "Gmail API returned 0 emails. Your inbox may be empty or the API scope wasn't granted.",
+    });
+  }
 
   // Use AI to categorize and summarize each email
   const client = getAzureOpenAI();

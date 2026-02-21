@@ -1,7 +1,6 @@
 "use client";
 
 import { Suspense, useState, useEffect } from "react";
-import { useSearchParams } from "next/navigation";
 import {
   User,
   Bell,
@@ -14,6 +13,7 @@ import {
   Mail,
   Calendar,
   Trash2,
+  ExternalLink,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -50,19 +50,8 @@ function SettingsContent() {
   const [isConnectingCanvas, setIsConnectingCanvas] = useState(false);
   const [isSyncingCanvas, setIsSyncingCanvas] = useState(false);
   const [isSyncingEmails, setIsSyncingEmails] = useState(false);
-
-  const searchParams = useSearchParams();
-
-  // Check for Canvas OAuth callback
-  useEffect(() => {
-    if (searchParams.get("canvas") === "connected") {
-      setCanvasConnected(true);
-      toast.success("Canvas connected!");
-    }
-    if (searchParams.get("error")?.startsWith("canvas")) {
-      toast.error("Canvas connection failed. Try again.");
-    }
-  }, [searchParams]);
+  const [canvasUrl, setCanvasUrl] = useState("https://umamherst.instructure.com");
+  const [canvasToken, setCanvasToken] = useState("");
 
   useEffect(() => {
     async function load() {
@@ -105,22 +94,34 @@ function SettingsContent() {
   }
 
   async function connectCanvas() {
+    if (!canvasUrl || !canvasToken) {
+      toast.error("Please enter your Canvas URL and access token.");
+      return;
+    }
     setIsConnectingCanvas(true);
     try {
       const res = await fetch("/api/canvas/connect", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ redirectTo: "/settings" }),
+        body: JSON.stringify({ canvasUrl, accessToken: canvasToken }),
       });
       const data = await res.json();
-      if (res.ok && data.url) {
-        window.location.href = data.url;
+      if (res.ok && data.success) {
+        setCanvasConnected(true);
+        setCanvasInfo({
+          id: "",
+          canvas_base_url: canvasUrl,
+          student_name: data.studentName || null,
+          last_synced_at: null,
+        });
+        setCanvasToken("");
+        toast.success("Canvas connected!");
       } else {
-        toast.error(data.error || "Failed to start Canvas login");
-        setIsConnectingCanvas(false);
+        toast.error(data.error || "Failed to connect Canvas");
       }
     } catch {
-      toast.error("Failed to start Canvas login");
+      toast.error("Failed to connect Canvas");
+    } finally {
       setIsConnectingCanvas(false);
     }
   }
@@ -161,7 +162,11 @@ function SettingsContent() {
       const res = await fetch("/api/google/emails", { method: "POST" });
       const data = await res.json();
       if (res.ok) {
-        toast.success(`Processed ${data.processed} new emails`);
+        if (data.processed > 0) {
+          toast.success(`Processed ${data.processed} new emails`);
+        } else {
+          toast.info(data.debug || "No new emails to process");
+        }
       } else {
         toast.error(data.error || "Email sync failed");
       }
@@ -327,22 +332,48 @@ function SettingsContent() {
                 </div>
               </div>
             ) : (
-              <div className="mt-3">
-                <Button
-                  onClick={connectCanvas}
-                  disabled={isConnectingCanvas}
-                  size="sm"
-                  className="gap-2 bg-red-600 hover:bg-red-700 text-white"
-                >
-                  {isConnectingCanvas ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <div className="flex h-4 w-4 items-center justify-center rounded bg-white/20 text-[10px] font-bold">
-                      C
-                    </div>
-                  )}
-                  Login with Canvas
-                </Button>
+              <div className="mt-3 space-y-3">
+                <div className="grid gap-2">
+                  <Input
+                    value={canvasUrl}
+                    onChange={(e) => setCanvasUrl(e.target.value)}
+                    placeholder="https://your-school.instructure.com"
+                    className="text-sm"
+                  />
+                  <Input
+                    type="password"
+                    value={canvasToken}
+                    onChange={(e) => setCanvasToken(e.target.value)}
+                    placeholder="Paste your Canvas access token"
+                    className="text-sm"
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <a
+                    href="https://community.canvaslms.com/t5/Student-Guide/How-do-I-manage-API-access-tokens-as-a-student/ta-p/273"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300"
+                  >
+                    How to get a token
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                  <Button
+                    onClick={connectCanvas}
+                    disabled={isConnectingCanvas || !canvasToken}
+                    size="sm"
+                    className="gap-2 bg-red-600 hover:bg-red-700 text-white"
+                  >
+                    {isConnectingCanvas ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <div className="flex h-4 w-4 items-center justify-center rounded bg-white/20 text-[10px] font-bold">
+                        C
+                      </div>
+                    )}
+                    Connect
+                  </Button>
+                </div>
               </div>
             )}
           </div>

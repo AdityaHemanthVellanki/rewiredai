@@ -1,8 +1,8 @@
 import { createClient } from "@/lib/supabase/server";
-import { getCanvasOAuthUrl } from "@/lib/canvas";
+import { validateCanvasToken } from "@/lib/canvas";
 import { NextResponse } from "next/server";
 
-// Initiate Canvas OAuth — returns the redirect URL
+// Connect Canvas — validate token and store connection
 export async function POST(request: Request) {
   const supabase = await createClient();
   const {
@@ -14,15 +14,55 @@ export async function POST(request: Request) {
   }
 
   const body = await request.json().catch(() => ({}));
-  const redirectTo = body.redirectTo || "/settings";
+  const { canvasUrl, accessToken } = body;
 
-  // Encode state: user_id + where to redirect after
-  const state = Buffer.from(
-    JSON.stringify({ userId: user.id, redirectTo })
-  ).toString("base64url");
+  if (!canvasUrl || !accessToken) {
+    return NextResponse.json(
+      { error: "Canvas URL and access token are required" },
+      { status: 400 }
+    );
+  }
 
-  const url = getCanvasOAuthUrl(state);
-  return NextResponse.json({ url });
+  // Normalize URL — strip trailing slash
+  const baseUrl = canvasUrl.replace(/\/+$/, "");
+
+  // Validate the token by fetching user profile
+  try {
+    const profile = await validateCanvasToken(baseUrl, accessToken);
+
+    // Upsert the Canvas connection
+    const { error: dbError } = await supabase
+      .from("canvas_connections")
+      .upsert(
+        {
+          user_id: user.id,
+          canvas_base_url: baseUrl,
+          api_token: accessToken,
+          student_name: profile.name || null,
+        },
+        { onConflict: "user_id" }
+      );
+
+    if (dbError) {
+      return NextResponse.json(
+        { error: "Failed to save Canvas connection" },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      studentName: profile.name,
+    });
+  } catch {
+    return NextResponse.json(
+      {
+        error:
+          "Could not connect to Canvas. Check your URL and access token.",
+      },
+      { status: 400 }
+    );
+  }
 }
 
 // Disconnect Canvas

@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense, useState, useEffect, useRef } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import {
   Zap,
   ArrowRight,
@@ -11,6 +11,7 @@ import {
   Camera,
   Check,
   SkipForward,
+  ExternalLink,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,7 +26,7 @@ const steps = [
   {
     title: "Connect Canvas",
     subtitle:
-      "Import your courses, assignments, and grades automatically from UMass Canvas.",
+      "Import your courses, assignments, and grades automatically from Canvas LMS.",
   },
   {
     title: "What's your big goal?",
@@ -56,7 +57,6 @@ export default function OnboardingPage() {
 
 function OnboardingContent() {
   const router = useRouter();
-  const searchParams = useSearchParams();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [step, setStep] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
@@ -78,35 +78,12 @@ function OnboardingContent() {
   const [isConnectingCanvas, setIsConnectingCanvas] = useState(false);
   const [canvasConnected, setCanvasConnected] = useState(false);
   const [canvasStudentName, setCanvasStudentName] = useState("");
+  const [canvasUrl, setCanvasUrl] = useState("https://umamherst.instructure.com");
+  const [canvasToken, setCanvasToken] = useState("");
 
   // Avatar upload
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const [avatarPreview, setAvatarPreview] = useState("");
-
-  // Check for Canvas OAuth callback
-  useEffect(() => {
-    if (searchParams.get("canvas") === "connected") {
-      setCanvasConnected(true);
-      setStep(1); // Show the Canvas step with success state
-      toast.success("Canvas connected!");
-
-      // Auto-sync courses
-      fetch("/api/canvas/sync", { method: "POST" })
-        .then((r) => r.json())
-        .then((syncData) => {
-          if (syncData.success) {
-            toast.success(
-              `Imported ${syncData.coursesCreated} courses and ${syncData.assignmentsCreated} assignments.`
-            );
-          }
-        })
-        .catch(() => {});
-    }
-    if (searchParams.get("error")?.startsWith("canvas")) {
-      setStep(1);
-      toast.error("Canvas connection failed. Try again or skip.");
-    }
-  }, [searchParams]);
 
   // Load existing profile data (e.g., name + avatar from Google)
   useEffect(() => {
@@ -171,23 +148,40 @@ function OnboardingContent() {
   }
 
   async function connectCanvas() {
+    if (!canvasUrl || !canvasToken) {
+      toast.error("Please enter your Canvas URL and access token.");
+      return;
+    }
     setIsConnectingCanvas(true);
     try {
       const res = await fetch("/api/canvas/connect", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ redirectTo: "/onboarding" }),
+        body: JSON.stringify({ canvasUrl, accessToken: canvasToken }),
       });
       const json = await res.json();
-      if (res.ok && json.url) {
-        // Redirect to Canvas OAuth page
-        window.location.href = json.url;
+      if (res.ok && json.success) {
+        setCanvasConnected(true);
+        setCanvasStudentName(json.studentName || "");
+        toast.success("Canvas connected!");
+
+        // Auto-sync courses
+        fetch("/api/canvas/sync", { method: "POST" })
+          .then((r) => r.json())
+          .then((syncData) => {
+            if (syncData.success) {
+              toast.success(
+                `Imported ${syncData.coursesCreated} courses and ${syncData.assignmentsCreated} assignments.`
+              );
+            }
+          })
+          .catch(() => {});
       } else {
-        toast.error(json.error || "Failed to start Canvas login");
-        setIsConnectingCanvas(false);
+        toast.error(json.error || "Failed to connect Canvas");
       }
     } catch {
-      toast.error("Failed to start Canvas login");
+      toast.error("Failed to connect Canvas");
+    } finally {
       setIsConnectingCanvas(false);
     }
   }
@@ -345,7 +339,7 @@ function OnboardingContent() {
           </div>
         )}
 
-        {/* Step 1: Canvas OAuth Login */}
+        {/* Step 1: Canvas — Personal Access Token */}
         {step === 1 && (
           <div className="space-y-4">
             {canvasConnected ? (
@@ -364,29 +358,50 @@ function OnboardingContent() {
                 </p>
               </div>
             ) : (
-              <div className="space-y-6">
-                <div className="rounded-xl border border-border/50 bg-card p-6 text-center">
-                  <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-xl bg-red-600 text-white text-xl font-bold">
-                    C
-                  </div>
-                  <p className="mb-1 text-sm text-muted-foreground">
-                    Log in with your UMass Amherst Canvas account to
-                    automatically import your courses and deadlines.
-                  </p>
+              <div className="space-y-4">
+                <div>
+                  <label className="mb-1 block text-sm text-muted-foreground">
+                    Canvas URL
+                  </label>
+                  <Input
+                    value={canvasUrl}
+                    onChange={(e) => setCanvasUrl(e.target.value)}
+                    placeholder="https://your-school.instructure.com"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm text-muted-foreground">
+                    Access Token
+                  </label>
+                  <Input
+                    type="password"
+                    value={canvasToken}
+                    onChange={(e) => setCanvasToken(e.target.value)}
+                    placeholder="Paste your Canvas access token"
+                  />
+                  <a
+                    href="https://community.canvaslms.com/t5/Student-Guide/How-do-I-manage-API-access-tokens-as-a-student/ta-p/273"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-2 inline-flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300"
+                  >
+                    How to generate a token
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
                 </div>
                 <Button
                   onClick={connectCanvas}
-                  disabled={isConnectingCanvas}
-                  className="w-full gap-3 bg-red-600 hover:bg-red-700 text-white h-12 text-base"
+                  disabled={isConnectingCanvas || !canvasToken}
+                  className="w-full gap-2 bg-red-600 hover:bg-red-700 text-white h-11"
                 >
                   {isConnectingCanvas ? (
-                    <Loader2 className="h-5 w-5 animate-spin" />
+                    <Loader2 className="h-4 w-4 animate-spin" />
                   ) : (
-                    <div className="flex h-6 w-6 items-center justify-center rounded bg-white/20 text-xs font-bold">
+                    <div className="flex h-5 w-5 items-center justify-center rounded bg-white/20 text-[10px] font-bold">
                       C
                     </div>
                   )}
-                  Continue with Canvas
+                  Connect Canvas
                 </Button>
               </div>
             )}

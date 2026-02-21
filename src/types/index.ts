@@ -206,9 +206,7 @@ export interface CanvasConnection {
   id: string;
   user_id: string;
   canvas_base_url: string;
-  access_token: string;
-  refresh_token: string | null;
-  token_expires_at: string | null;
+  api_token: string;
   student_name: string | null;
   last_synced_at: string | null;
   created_at: string;

@@ -4,115 +4,19 @@ import type {
   CanvasSubmission,
 } from "@/types";
 
-// UMass Amherst Canvas
-const CANVAS_BASE_URL = "https://umass.instructure.com";
-
 // ============================================
-// Canvas OAuth
+// Canvas API — Personal Access Token Approach
 // ============================================
-
-/**
- * Build the Canvas OAuth authorization URL for UMass Amherst.
- */
-export function getCanvasOAuthUrl(state: string): string {
-  const params = new URLSearchParams({
-    client_id: process.env.CANVAS_CLIENT_ID!,
-    response_type: "code",
-    redirect_uri: process.env.CANVAS_REDIRECT_URI!,
-    state,
-  });
-
-  return `${CANVAS_BASE_URL}/login/oauth2/auth?${params.toString()}`;
-}
-
-/**
- * Exchange an authorization code for access + refresh tokens.
- */
-export async function exchangeCanvasCode(code: string): Promise<{
-  access_token: string;
-  refresh_token: string;
-  expires_in: number;
-  user: { id: number; name: string };
-}> {
-  const res = await fetch(`${CANVAS_BASE_URL}/login/oauth2/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      client_id: process.env.CANVAS_CLIENT_ID!,
-      client_secret: process.env.CANVAS_CLIENT_SECRET!,
-      redirect_uri: process.env.CANVAS_REDIRECT_URI!,
-      code,
-    }),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Canvas token exchange failed (${res.status}): ${text}`);
-  }
-
-  return res.json();
-}
-
-/**
- * Refresh an expired Canvas access token.
- */
-export async function refreshCanvasToken(
-  refreshToken: string
-): Promise<{ access_token: string; expires_in: number }> {
-  const res = await fetch(`${CANVAS_BASE_URL}/login/oauth2/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "refresh_token",
-      client_id: process.env.CANVAS_CLIENT_ID!,
-      client_secret: process.env.CANVAS_CLIENT_SECRET!,
-      refresh_token: refreshToken,
-    }),
-  });
-
-  if (!res.ok) {
-    throw new Error(`Canvas token refresh failed: ${res.statusText}`);
-  }
-
-  return res.json();
-}
-
-/**
- * Get a valid Canvas access token, refreshing if expired.
- */
-export async function getValidCanvasToken(
-  accessToken: string,
-  refreshToken: string | null,
-  expiresAt: Date | null
-): Promise<{ accessToken: string; refreshed: boolean; expiresAt?: Date }> {
-  // If no expiry info or still valid, return current token
-  if (!expiresAt || new Date() < new Date(expiresAt.getTime() - 5 * 60 * 1000)) {
-    return { accessToken, refreshed: false };
-  }
-
-  if (!refreshToken) {
-    return { accessToken, refreshed: false };
-  }
-
-  const tokens = await refreshCanvasToken(refreshToken);
-  return {
-    accessToken: tokens.access_token,
-    refreshed: true,
-    expiresAt: new Date(Date.now() + tokens.expires_in * 1000),
-  };
-}
-
-// ============================================
-// Canvas API
-// ============================================
+// Students generate a token at: Canvas → Account → Settings → New Access Token
+// Works with any Canvas instance (UMass, MIT, etc.)
 
 async function canvasFetch<T>(
+  baseUrl: string,
   accessToken: string,
   path: string,
   params?: Record<string, string>
 ): Promise<T> {
-  const url = new URL(`/api/v1${path}`, CANVAS_BASE_URL);
+  const url = new URL(`/api/v1${path}`, baseUrl);
   if (params) {
     Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
   }
@@ -132,10 +36,22 @@ async function canvasFetch<T>(
   return res.json() as Promise<T>;
 }
 
+/**
+ * Validate a Canvas token by fetching the user's profile.
+ * Returns the profile if valid, throws if not.
+ */
+export async function validateCanvasToken(
+  baseUrl: string,
+  accessToken: string
+): Promise<{ id: number; name: string; primary_email: string }> {
+  return canvasFetch(baseUrl, accessToken, "/users/self/profile");
+}
+
 export async function fetchCanvasCourses(
+  baseUrl: string,
   accessToken: string
 ): Promise<CanvasCourse[]> {
-  return canvasFetch<CanvasCourse[]>(accessToken, "/courses", {
+  return canvasFetch<CanvasCourse[]>(baseUrl, accessToken, "/courses", {
     enrollment_state: "active",
     include: "total_scores",
     per_page: "50",
@@ -143,10 +59,12 @@ export async function fetchCanvasCourses(
 }
 
 export async function fetchCanvasAssignments(
+  baseUrl: string,
   accessToken: string,
   courseId: number
 ): Promise<CanvasAssignment[]> {
   return canvasFetch<CanvasAssignment[]>(
+    baseUrl,
     accessToken,
     `/courses/${courseId}/assignments`,
     {
@@ -157,10 +75,12 @@ export async function fetchCanvasAssignments(
 }
 
 export async function fetchCanvasSubmissions(
+  baseUrl: string,
   accessToken: string,
   courseId: number
 ): Promise<CanvasSubmission[]> {
   return canvasFetch<CanvasSubmission[]>(
+    baseUrl,
     accessToken,
     `/courses/${courseId}/students/submissions`,
     {
@@ -169,11 +89,3 @@ export async function fetchCanvasSubmissions(
     }
   );
 }
-
-export async function fetchCanvasProfile(
-  accessToken: string
-): Promise<{ id: number; name: string; primary_email: string }> {
-  return canvasFetch(accessToken, "/users/self/profile");
-}
-
-export { CANVAS_BASE_URL };
