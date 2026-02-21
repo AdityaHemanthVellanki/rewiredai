@@ -8,7 +8,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -27,6 +27,13 @@ import {
   parseISO,
 } from "date-fns";
 
+interface GoogleCalendarEvent {
+  id: string;
+  summary: string;
+  start: { dateTime: string; timeZone?: string };
+  end: { dateTime: string; timeZone?: string };
+}
+
 const HOURS = Array.from({ length: 16 }, (_, i) => i + 7); // 7am - 10pm
 
 export default function SchedulePage() {
@@ -35,6 +42,7 @@ export default function SchedulePage() {
   );
   const [studyBlocks, setStudyBlocks] = useState<StudyBlock[]>([]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
+  const [googleEvents, setGoogleEvents] = useState<GoogleCalendarEvent[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [newBlock, setNewBlock] = useState({
@@ -57,12 +65,15 @@ export default function SchedulePage() {
     setIsLoading(true);
     const weekEnd = addDays(currentWeekStart, 7);
     try {
-      const [sbRes, aRes] = await Promise.all([
+      const [sbRes, aRes, calRes] = await Promise.all([
         fetch(
           `/api/study-blocks?start=${currentWeekStart.toISOString()}&end=${weekEnd.toISOString()}`
         ),
         fetch(
           `/api/assignments?start=${currentWeekStart.toISOString()}&end=${weekEnd.toISOString()}`
+        ),
+        fetch(
+          `/api/google/calendar?timeMin=${currentWeekStart.toISOString()}&timeMax=${weekEnd.toISOString()}`
         ),
       ]);
 
@@ -73,6 +84,10 @@ export default function SchedulePage() {
       if (aRes.ok) {
         const data = await aRes.json();
         setAssignments(data.assignments || []);
+      }
+      if (calRes.ok) {
+        const data = await calRes.json();
+        setGoogleEvents(data.events || []);
       }
     } catch {
       toast.error("Failed to load schedule");
@@ -109,6 +124,16 @@ export default function SchedulePage() {
       toast.error("Failed to add study block");
     }
   }
+
+  // Filter Google Calendar events to exclude study blocks (they're already shown)
+  const filteredGoogleEvents = googleEvents.filter(
+    (ge) => {
+      // Exclude events that are Rewired study blocks (they have the 📚 prefix)
+      if (ge.summary?.startsWith("📚")) return false;
+      // Also exclude if any study block has this google_event_id
+      return !studyBlocks.some((sb) => sb.google_event_id === ge.id);
+    }
+  );
 
   return (
     <div className="space-y-6">
@@ -213,6 +238,22 @@ export default function SchedulePage() {
         </div>
       </div>
 
+      {/* Legend */}
+      <div className="flex gap-4 text-xs text-muted-foreground">
+        <div className="flex items-center gap-1.5">
+          <div className="h-3 w-3 rounded bg-blue-500/30 border border-blue-500/50" />
+          <span>Classes / Calendar</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div className="h-3 w-3 rounded bg-purple-500/30 border border-purple-500/50" />
+          <span>Study Blocks</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div className="h-3 w-3 rounded bg-red-500/30 border border-red-500/50" />
+          <span>Deadlines</span>
+        </div>
+      </div>
+
       {isLoading ? (
         <div className="flex h-64 items-center justify-center">
           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -268,6 +309,13 @@ export default function SchedulePage() {
                         isSameDay(parseISO(a.due_date), day) &&
                         new Date(a.due_date).getHours() === hour
                     );
+                    // Google Calendar events for this day/hour
+                    const dayGoogleEvents = filteredGoogleEvents.filter(
+                      (ge) => {
+                        const start = new Date(ge.start.dateTime);
+                        return isSameDay(start, day) && start.getHours() === hour;
+                      }
+                    );
 
                     return (
                       <div
@@ -276,6 +324,25 @@ export default function SchedulePage() {
                           isSameDay(day, new Date()) ? "bg-purple-500/5" : ""
                         }`}
                       >
+                        {/* Google Calendar events (classes, etc.) — blue */}
+                        {dayGoogleEvents.map((ge) => {
+                          const startTime = new Date(ge.start.dateTime);
+                          const endTime = new Date(ge.end.dateTime);
+                          const durationHours =
+                            (endTime.getTime() - startTime.getTime()) / 3600000;
+                          return (
+                            <div
+                              key={ge.id}
+                              className="absolute inset-x-1 rounded bg-blue-500/20 border border-blue-500/40 p-1 text-xs z-10"
+                              style={{ height: `${Math.max(durationHours * 60 - 4, 16)}px` }}
+                            >
+                              <span className="font-medium text-blue-300">
+                                {ge.summary || "Event"}
+                              </span>
+                            </div>
+                          );
+                        })}
+                        {/* Study blocks — purple */}
                         {dayBlocks.map((sb) => {
                           const durationHours =
                             (new Date(sb.end_time).getTime() -
@@ -293,6 +360,7 @@ export default function SchedulePage() {
                             </div>
                           );
                         })}
+                        {/* Deadlines — red */}
                         {dayDeadlines.map((a) => (
                           <div
                             key={a.id}

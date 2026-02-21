@@ -12,11 +12,40 @@ import {
   Check,
   SkipForward,
   ExternalLink,
+  Brain,
+  Info,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
+
+interface AutoConfig {
+  productivity_peak_hours: string[];
+  sleep_window: { sleep: string; wake: string };
+  escalation_mode: "gentle" | "standard" | "aggressive";
+  gpa_target: number | null;
+  reasoning: {
+    peak_hours_reason: string;
+    sleep_reason: string;
+    escalation_reason: string;
+    gpa_reason: string;
+    workload_summary: string;
+  };
+  signals: {
+    total_courses: number;
+    total_assignments: number;
+    upcoming_assignments: number;
+    on_time_rate: number | null;
+    late_rate: number | null;
+    missing_rate: number | null;
+    current_avg_score: number | null;
+    weekly_class_hours: number;
+    busiest_day: string | null;
+    earliest_class: string | null;
+    latest_event: string | null;
+  };
+}
 
 const steps = [
   {
@@ -29,6 +58,11 @@ const steps = [
       "Import your courses, assignments, and grades automatically from Canvas LMS.",
   },
   {
+    title: "Your Personalized Settings",
+    subtitle:
+      "I analyzed your Canvas and Google Calendar data to configure everything for you.",
+  },
+  {
     title: "What's your big goal?",
     subtitle:
       "Why are you in college? I'll use this to motivate you when things get hard.",
@@ -38,12 +72,12 @@ const steps = [
     subtitle: "What do you want to accomplish?",
   },
   {
-    title: "How you work best",
-    subtitle: "Help me schedule your study time at the right moments.",
+    title: "Fine-tune your settings",
+    subtitle: "Review what I configured — adjust anything that doesn't feel right.",
   },
   {
     title: "How hard should I push?",
-    subtitle: "Choose your nudge intensity. You can always change this later.",
+    subtitle: "I picked this based on your Canvas history. Feel free to change it.",
   },
 ];
 
@@ -84,6 +118,11 @@ function OnboardingContent() {
   // Avatar upload
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const [avatarPreview, setAvatarPreview] = useState("");
+
+  // Auto-config state
+  const [autoConfig, setAutoConfig] = useState<AutoConfig | null>(null);
+  const [isAutoConfiguring, setIsAutoConfiguring] = useState(false);
+  const [autoConfigRan, setAutoConfigRan] = useState(false);
 
   // Load existing profile data (e.g., name + avatar from Google)
   useEffect(() => {
@@ -185,6 +224,43 @@ function OnboardingContent() {
       setIsConnectingCanvas(false);
     }
   }
+
+  // Run auto-config when entering the auto-config step
+  async function runAutoConfig() {
+    if (autoConfigRan) return;
+    setIsAutoConfiguring(true);
+    try {
+      const res = await fetch("/api/profile/auto-configure", {
+        method: "POST",
+      });
+      if (res.ok) {
+        const config: AutoConfig = await res.json();
+        setAutoConfig(config);
+        setAutoConfigRan(true);
+
+        // Pre-fill the form with auto-configured values
+        setData((prev) => ({
+          ...prev,
+          productivity_peak: config.productivity_peak_hours.join(", "),
+          sleep_time: config.sleep_window.sleep,
+          wake_time: config.sleep_window.wake,
+          escalation_mode: config.escalation_mode,
+          gpa_target: config.gpa_target ? String(config.gpa_target) : prev.gpa_target,
+        }));
+      }
+    } catch {
+      // Silently fall back to defaults
+    } finally {
+      setIsAutoConfiguring(false);
+    }
+  }
+
+  // Trigger auto-config when step 2 (auto-config step) is reached
+  useEffect(() => {
+    if (step === 2 && !autoConfigRan) {
+      runAutoConfig();
+    }
+  }, [step]);
 
   async function handleFinish() {
     setIsSaving(true);
@@ -408,8 +484,104 @@ function OnboardingContent() {
           </div>
         )}
 
-        {/* Step 2: Personal Why */}
+        {/* Step 2: Auto-Config Results */}
         {step === 2 && (
+          <div className="space-y-4">
+            {isAutoConfiguring ? (
+              <div className="rounded-xl border border-purple-500/30 bg-purple-500/5 p-8 text-center">
+                <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-purple-500/10">
+                  <Brain className="h-7 w-7 text-purple-400 animate-pulse" />
+                </div>
+                <p className="font-semibold text-purple-400">
+                  Analyzing your data...
+                </p>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Checking your Canvas submissions, grades, and Google Calendar to configure optimal settings.
+                </p>
+                <Loader2 className="mx-auto mt-4 h-5 w-5 animate-spin text-purple-400" />
+              </div>
+            ) : autoConfig ? (
+              <div className="space-y-3">
+                {/* Workload */}
+                {autoConfig.reasoning.workload_summary && (
+                  <InsightCard
+                    label="Workload"
+                    value={autoConfig.reasoning.workload_summary}
+                    stats={[
+                      autoConfig.signals.total_courses > 0 ? `${autoConfig.signals.total_courses} courses` : null,
+                      autoConfig.signals.upcoming_assignments > 0 ? `${autoConfig.signals.upcoming_assignments} upcoming` : null,
+                    ].filter(Boolean) as string[]}
+                  />
+                )}
+
+                {/* Submission Behavior */}
+                {autoConfig.signals.on_time_rate !== null && (
+                  <InsightCard
+                    label="Submission History"
+                    value={autoConfig.reasoning.escalation_reason}
+                    stats={[
+                      `${autoConfig.signals.on_time_rate}% on-time`,
+                      autoConfig.signals.late_rate ? `${autoConfig.signals.late_rate}% late` : null,
+                      autoConfig.signals.missing_rate ? `${autoConfig.signals.missing_rate}% missed` : null,
+                    ].filter(Boolean) as string[]}
+                    color={
+                      (autoConfig.signals.on_time_rate || 0) >= 80
+                        ? "green"
+                        : (autoConfig.signals.on_time_rate || 0) >= 60
+                          ? "yellow"
+                          : "red"
+                    }
+                  />
+                )}
+
+                {/* Grades */}
+                {autoConfig.signals.current_avg_score !== null && (
+                  <InsightCard
+                    label="Current Performance"
+                    value={autoConfig.reasoning.gpa_reason}
+                    stats={[`Avg: ${autoConfig.signals.current_avg_score}%`]}
+                    color={
+                      autoConfig.signals.current_avg_score >= 85
+                        ? "green"
+                        : autoConfig.signals.current_avg_score >= 70
+                          ? "yellow"
+                          : "red"
+                    }
+                  />
+                )}
+
+                {/* Schedule */}
+                {autoConfig.signals.weekly_class_hours > 0 && (
+                  <InsightCard
+                    label="Schedule Analysis"
+                    value={autoConfig.reasoning.peak_hours_reason}
+                    stats={[
+                      `~${autoConfig.signals.weekly_class_hours}hrs/week in classes`,
+                      autoConfig.signals.busiest_day ? `Busiest: ${autoConfig.signals.busiest_day}` : null,
+                      autoConfig.signals.earliest_class ? `Earliest class: ${autoConfig.signals.earliest_class}` : null,
+                    ].filter(Boolean) as string[]}
+                  />
+                )}
+
+                <div className="flex items-start gap-2 rounded-lg bg-purple-500/5 border border-purple-500/20 p-3 mt-2">
+                  <Info className="h-4 w-4 text-purple-400 mt-0.5 shrink-0" />
+                  <p className="text-xs text-muted-foreground">
+                    All settings are pre-filled based on this analysis. You can review and adjust them in the next steps.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-xl border border-border/50 bg-card p-6 text-center">
+                <p className="text-muted-foreground">
+                  Connect Canvas and Google to get personalized settings, or continue to set them manually.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Step 3: Personal Why */}
+        {step === 3 && (
           <div className="space-y-4">
             <Textarea
               value={data.personal_why}
@@ -427,8 +599,8 @@ function OnboardingContent() {
           </div>
         )}
 
-        {/* Step 3: Goals + GPA */}
-        {step === 3 && (
+        {/* Step 4: Goals + GPA */}
+        {step === 4 && (
           <div className="space-y-4">
             <div>
               <label className="mb-1 block text-sm text-muted-foreground">
@@ -447,8 +619,13 @@ function OnboardingContent() {
               />
             </div>
             <div>
-              <label className="mb-1 block text-sm text-muted-foreground">
+              <label className="mb-1 flex items-center gap-2 text-sm text-muted-foreground">
                 GPA target
+                {autoConfig?.gpa_target && (
+                  <span className="rounded-full bg-purple-500/10 px-2 py-0.5 text-xs text-purple-400">
+                    AI suggested: {autoConfig.gpa_target}
+                  </span>
+                )}
               </label>
               <Input
                 type="number"
@@ -465,26 +642,41 @@ function OnboardingContent() {
           </div>
         )}
 
-        {/* Step 4: Productivity */}
-        {step === 4 && (
+        {/* Step 5: Productivity (with AI pre-fill) */}
+        {step === 5 && (
           <div className="space-y-4">
             <div>
-              <label className="mb-1 block text-sm text-muted-foreground">
-                When are you most productive? (e.g., 10:00-13:00, 19:00-22:00)
+              <label className="mb-1 flex items-center gap-2 text-sm text-muted-foreground">
+                Peak productivity hours
+                {autoConfig && autoConfig.productivity_peak_hours.length > 0 && (
+                  <span className="rounded-full bg-purple-500/10 px-2 py-0.5 text-xs text-purple-400">
+                    AI configured
+                  </span>
+                )}
               </label>
               <Input
                 value={data.productivity_peak}
                 onChange={(e) =>
                   setData({ ...data, productivity_peak: e.target.value })
                 }
-                placeholder="10:00-13:00, 19:00-22:00"
+                placeholder="09:00, 10:00, 14:00, 15:00"
                 autoFocus
               />
+              {autoConfig?.reasoning.peak_hours_reason && (
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  {autoConfig.reasoning.peak_hours_reason}
+                </p>
+              )}
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="mb-1 block text-sm text-muted-foreground">
+                <label className="mb-1 flex items-center gap-2 text-sm text-muted-foreground">
                   I usually sleep at
+                  {autoConfig && (
+                    <span className="rounded-full bg-purple-500/10 px-2 py-0.5 text-xs text-purple-400">
+                      AI
+                    </span>
+                  )}
                 </label>
                 <Input
                   type="time"
@@ -495,8 +687,13 @@ function OnboardingContent() {
                 />
               </div>
               <div>
-                <label className="mb-1 block text-sm text-muted-foreground">
-                  I usually wake up at
+                <label className="mb-1 flex items-center gap-2 text-sm text-muted-foreground">
+                  I wake up at
+                  {autoConfig && (
+                    <span className="rounded-full bg-purple-500/10 px-2 py-0.5 text-xs text-purple-400">
+                      AI
+                    </span>
+                  )}
                 </label>
                 <Input
                   type="time"
@@ -507,33 +704,57 @@ function OnboardingContent() {
                 />
               </div>
             </div>
+            {autoConfig?.reasoning.sleep_reason && (
+              <p className="text-xs text-muted-foreground">
+                {autoConfig.reasoning.sleep_reason}
+              </p>
+            )}
           </div>
         )}
 
-        {/* Step 5: Nudge Intensity */}
-        {step === 5 && (
+        {/* Step 6: Nudge Intensity (with AI recommendation) */}
+        {step === 6 && (
           <div className="space-y-3">
-            {(["gentle", "standard", "aggressive"] as const).map((mode) => (
-              <button
-                key={mode}
-                onClick={() => setData({ ...data, escalation_mode: mode })}
-                className={`w-full rounded-xl border p-4 text-left transition-colors ${
-                  data.escalation_mode === mode
-                    ? "border-purple-500 bg-purple-500/10"
-                    : "border-border/50 hover:border-border"
-                }`}
-              >
-                <p className="font-semibold capitalize">{mode}</p>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {mode === "gentle" &&
-                    "Friendly reminders. No guilt trips. I'll suggest but never force."}
-                  {mode === "standard" &&
-                    "I'll be direct. If you're procrastinating, I'll call it out — with love."}
-                  {mode === "aggressive" &&
-                    "Full accountability mode. I will block your free time if you ignore me. You asked for this."}
+            {(["gentle", "standard", "aggressive"] as const).map((mode) => {
+              const isRecommended = autoConfig?.escalation_mode === mode;
+              return (
+                <button
+                  key={mode}
+                  onClick={() => setData({ ...data, escalation_mode: mode })}
+                  className={`w-full rounded-xl border p-4 text-left transition-colors ${
+                    data.escalation_mode === mode
+                      ? "border-purple-500 bg-purple-500/10"
+                      : "border-border/50 hover:border-border"
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <p className="font-semibold capitalize">{mode}</p>
+                    {isRecommended && (
+                      <span className="rounded-full bg-purple-500/20 px-2 py-0.5 text-xs text-purple-400 flex items-center gap-1">
+                        <Brain className="h-3 w-3" />
+                        AI recommended
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    {mode === "gentle" &&
+                      "Friendly reminders. No guilt trips. I'll suggest but never force."}
+                    {mode === "standard" &&
+                      "I'll be direct. If you're procrastinating, I'll call it out — with love."}
+                    {mode === "aggressive" &&
+                      "Full accountability mode. I will block your free time if you ignore me. You asked for this."}
+                  </p>
+                </button>
+              );
+            })}
+            {autoConfig?.reasoning.escalation_reason && (
+              <div className="flex items-start gap-2 rounded-lg bg-purple-500/5 border border-purple-500/20 p-3">
+                <Brain className="h-4 w-4 text-purple-400 mt-0.5 shrink-0" />
+                <p className="text-xs text-muted-foreground">
+                  {autoConfig.reasoning.escalation_reason}
                 </p>
-              </button>
-            ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -563,8 +784,12 @@ function OnboardingContent() {
             {step < steps.length - 1 ? (
               <Button
                 onClick={() => setStep(step + 1)}
+                disabled={step === 2 && isAutoConfiguring}
                 className="bg-purple-600 hover:bg-purple-700"
               >
+                {step === 2 && isAutoConfiguring ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : null}
                 Next
                 <ArrowRight className="ml-2 h-4 w-4" />
               </Button>
@@ -585,6 +810,64 @@ function OnboardingContent() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ============================================
+// Insight Card Component
+// ============================================
+
+function InsightCard({
+  label,
+  value,
+  stats,
+  color = "purple",
+}: {
+  label: string;
+  value: string;
+  stats?: string[];
+  color?: "purple" | "green" | "yellow" | "red";
+}) {
+  const borderColors = {
+    purple: "border-purple-500/20",
+    green: "border-green-500/20",
+    yellow: "border-yellow-500/20",
+    red: "border-red-500/20",
+  };
+  const bgColors = {
+    purple: "bg-purple-500/5",
+    green: "bg-green-500/5",
+    yellow: "bg-yellow-500/5",
+    red: "bg-red-500/5",
+  };
+  const statBgColors = {
+    purple: "bg-purple-500/10 text-purple-400",
+    green: "bg-green-500/10 text-green-400",
+    yellow: "bg-yellow-500/10 text-yellow-400",
+    red: "bg-red-500/10 text-red-400",
+  };
+
+  return (
+    <div className={`rounded-xl border ${borderColors[color]} ${bgColors[color]} p-4`}>
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          {label}
+        </p>
+        {stats && stats.length > 0 && (
+          <div className="flex gap-1.5">
+            {stats.map((stat) => (
+              <span
+                key={stat}
+                className={`rounded-full px-2 py-0.5 text-xs font-medium ${statBgColors[color]}`}
+              >
+                {stat}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+      <p className="text-sm text-foreground/80">{value}</p>
     </div>
   );
 }

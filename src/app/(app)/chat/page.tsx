@@ -16,10 +16,13 @@ interface Message {
 
 const quickActions = [
   "What's due this week?",
-  "Schedule study time",
+  "Auto-schedule my study time",
   "Check my grades",
-  "I need motivation",
-  "Summarize my emails",
+  "Sync my Canvas",
+  "What should I focus on right now?",
+  "Check my emails",
+  "I'm stressed, help me plan",
+  "What grade do I need on my next exam?",
 ];
 
 export default function ChatPage() {

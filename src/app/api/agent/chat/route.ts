@@ -3,7 +3,11 @@ import { getAzureOpenAI } from "@/lib/azure-openai";
 import { buildSystemPrompt } from "@/lib/agent/system-prompt";
 import { agentTools } from "@/lib/agent/tools";
 import { getGoogleAccessToken } from "@/lib/google/auth";
-import { createCalendarEvent } from "@/lib/google/calendar";
+import {
+  fetchCalendarEvents,
+  createCalendarEvent,
+  deleteCalendarEvent,
+} from "@/lib/google/calendar";
 import { fetchRecentEmails } from "@/lib/google/gmail";
 import {
   fetchCanvasCourses,
@@ -195,11 +199,22 @@ export async function POST(request: Request) {
         controller.close();
       } catch (error) {
         console.error("Chat error:", error);
+        const errorMsg =
+          error instanceof Error
+            ? error.message.includes("401")
+              ? "AI service auth failed. Check your Azure OpenAI API key."
+              : error.message.includes("429")
+                ? "Rate limited — too many requests. Try again in a moment."
+                : error.message.includes("404")
+                  ? "AI model deployment not found. Check your Azure OpenAI settings."
+                  : `Something went wrong: ${error.message.substring(0, 100)}`
+            : "Sorry, something went wrong. Try again?";
         controller.enqueue(
           encoder.encode(
-            `data: ${JSON.stringify({ content: "Sorry, something went wrong. Try again?" })}\n\n`
+            `data: ${JSON.stringify({ content: errorMsg })}\n\n`
           )
         );
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
         controller.close();
       }
     },
@@ -212,6 +227,29 @@ export async function POST(request: Request) {
       Connection: "keep-alive",
     },
   });
+}
+
+// Helper: fetch Google Calendar events for a date range (with graceful fallback)
+async function fetchGoogleCalendarEvents(
+  userId: string,
+  startDate: string,
+  endDate: string
+): Promise<Array<{ id: string; title: string; start: string; end: string; source: "google_calendar" }>> {
+  try {
+    const accessToken = await getGoogleAccessToken(userId);
+    if (!accessToken) return [];
+
+    const events = await fetchCalendarEvents(accessToken, startDate, endDate);
+    return events.map((e) => ({
+      id: e.id,
+      title: e.summary || "(No title)",
+      start: e.start.dateTime,
+      end: e.end.dateTime,
+      source: "google_calendar" as const,
+    }));
+  } catch {
+    return [];
+  }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -251,14 +289,60 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
     }
 
     case "get_calendar_events": {
+      // Fetch BOTH study blocks AND Google Calendar events
       const { data: studyBlocks } = await supabase
         .from("study_blocks")
-        .select("*")
+        .select("*, course:courses(name, code)")
         .eq("user_id", userId)
         .gte("start_time", args.start_date)
         .lte("start_time", args.end_date);
 
-      return studyBlocks || [];
+      const formattedBlocks = (studyBlocks || []).map(
+        (sb: { id: string; title: string; start_time: string; end_time: string; status: string; course?: { name: string } }) => ({
+          id: sb.id,
+          title: sb.title,
+          start: sb.start_time,
+          end: sb.end_time,
+          status: sb.status,
+          course: sb.course?.name || null,
+          source: "study_block",
+        })
+      );
+
+      // Also fetch real Google Calendar events (classes, meetings, etc.)
+      const googleEvents = await fetchGoogleCalendarEvents(
+        userId,
+        args.start_date,
+        args.end_date
+      );
+
+      // Also get assignments with due dates in this range
+      const { data: assignments } = await supabase
+        .from("assignments")
+        .select("id, title, due_date, status, course:courses(name)")
+        .eq("user_id", userId)
+        .gte("due_date", args.start_date)
+        .lte("due_date", args.end_date);
+
+      const formattedDeadlines = (assignments || []).map(
+        (a: { id: string; title: string; due_date: string; status: string; course?: { name: string } }) => ({
+          id: a.id,
+          title: `DUE: ${a.title}`,
+          start: a.due_date,
+          end: a.due_date,
+          status: a.status,
+          course: a.course?.name || null,
+          source: "deadline",
+        })
+      );
+
+      return {
+        events: [...googleEvents, ...formattedBlocks, ...formattedDeadlines]
+          .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()),
+        google_calendar_count: googleEvents.length,
+        study_block_count: formattedBlocks.length,
+        deadline_count: formattedDeadlines.length,
+      };
     }
 
     case "get_email_summaries": {
@@ -291,9 +375,10 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
         .select()
         .single();
 
-      // Sync to Google Calendar if requested
+      // Sync to Google Calendar (default true)
       let calendarEventId = null;
-      if (args.sync_to_google && data) {
+      const shouldSync = args.sync_to_google !== false;
+      if (shouldSync && data) {
         try {
           const accessToken = await getGoogleAccessToken(userId);
           if (accessToken) {
@@ -305,7 +390,6 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
               colorId: "9", // blueberry
             });
             calendarEventId = calEvent.id;
-            // Update study block with Google Calendar event ID
             await supabase
               .from("study_blocks")
               .update({ google_event_id: calEvent.id })
@@ -321,6 +405,130 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
         studyBlock: data,
         google_calendar_synced: !!calendarEventId,
       };
+    }
+
+    case "update_study_block": {
+      const updates: Record<string, unknown> = {};
+      if (args.title) updates.title = args.title;
+      if (args.start_time) updates.start_time = args.start_time;
+      if (args.end_time) updates.end_time = args.end_time;
+      if (args.status) updates.status = args.status;
+
+      // Get the existing block first (to check for google_event_id)
+      const { data: existing } = await supabase
+        .from("study_blocks")
+        .select("*")
+        .eq("id", args.study_block_id)
+        .eq("user_id", userId)
+        .single();
+
+      if (!existing) {
+        return { error: "Study block not found" };
+      }
+
+      await supabase
+        .from("study_blocks")
+        .update(updates)
+        .eq("id", args.study_block_id)
+        .eq("user_id", userId);
+
+      // If time changed and it's synced to Google, update the Google event too
+      if ((args.start_time || args.end_time || args.title) && existing.google_event_id) {
+        try {
+          const accessToken = await getGoogleAccessToken(userId);
+          if (accessToken) {
+            // Delete old event, create new one (simpler than PATCH for partial updates)
+            await deleteCalendarEvent(accessToken, existing.google_event_id);
+            const calEvent = await createCalendarEvent(accessToken, {
+              summary: `📚 ${args.title || existing.title}`,
+              description: "Study block created by Rewired AI",
+              startTime: args.start_time || existing.start_time,
+              endTime: args.end_time || existing.end_time,
+              colorId: "9",
+            });
+            await supabase
+              .from("study_blocks")
+              .update({ google_event_id: calEvent.id })
+              .eq("id", args.study_block_id);
+          }
+        } catch {
+          // Non-critical
+        }
+      }
+
+      return { updated: true, message: "Study block updated." };
+    }
+
+    case "delete_study_block": {
+      // Get the block first to check for google_event_id
+      const { data: block } = await supabase
+        .from("study_blocks")
+        .select("google_event_id")
+        .eq("id", args.study_block_id)
+        .eq("user_id", userId)
+        .single();
+
+      if (!block) {
+        return { error: "Study block not found" };
+      }
+
+      // Delete from Google Calendar if synced
+      if (block.google_event_id) {
+        try {
+          const accessToken = await getGoogleAccessToken(userId);
+          if (accessToken) {
+            await deleteCalendarEvent(accessToken, block.google_event_id);
+          }
+        } catch {
+          // Non-critical
+        }
+      }
+
+      await supabase
+        .from("study_blocks")
+        .delete()
+        .eq("id", args.study_block_id)
+        .eq("user_id", userId);
+
+      return { deleted: true, message: "Study block deleted." };
+    }
+
+    case "create_google_calendar_event": {
+      try {
+        const accessToken = await getGoogleAccessToken(userId);
+        if (!accessToken) {
+          return { error: "Google account not connected." };
+        }
+
+        const calEvent = await createCalendarEvent(accessToken, {
+          summary: args.title,
+          description: args.description || "",
+          startTime: args.start_time,
+          endTime: args.end_time,
+        });
+
+        return {
+          created: true,
+          event_id: calEvent.id,
+          message: `Created "${args.title}" on Google Calendar.`,
+        };
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : "Failed to create calendar event" };
+      }
+    }
+
+    case "delete_google_calendar_event": {
+      try {
+        const accessToken = await getGoogleAccessToken(userId);
+        if (!accessToken) {
+          return { error: "Google account not connected." };
+        }
+
+        await deleteCalendarEvent(accessToken, args.event_id);
+        return { deleted: true, message: "Calendar event deleted." };
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : "Failed to delete calendar event" };
+      }
     }
 
     case "create_nudge": {
@@ -472,7 +680,7 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
     }
 
     // ============================================
-    // New agentic tools
+    // Agentic tools
     // ============================================
 
     case "sync_canvas": {
@@ -530,7 +738,6 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
                 status = new Date(ca.due_at) < new Date() ? "overdue" : "pending";
               }
 
-              // Update existing assignments
               const { data: existing } = await supabase
                 .from("assignments")
                 .select("id")
@@ -613,13 +820,21 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
         .limit(10);
 
       // Get existing study blocks for the next 7 days
+      const now = new Date();
       const nextWeek = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
       const { data: existingBlocks } = await supabase
         .from("study_blocks")
         .select("*")
         .eq("user_id", userId)
-        .gte("start_time", new Date().toISOString())
+        .gte("start_time", now.toISOString())
         .lte("start_time", nextWeek);
+
+      // CRITICAL: Also fetch Google Calendar events to avoid scheduling over classes
+      const googleEvents = await fetchGoogleCalendarEvents(
+        userId,
+        now.toISOString(),
+        nextWeek
+      );
 
       if (!upcoming || upcoming.length === 0) {
         return { message: "No upcoming assignments to schedule study time for." };
@@ -629,21 +844,34 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
       const sleepWindow = profileData?.sleep_window || { sleep: "23:00", wake: "08:00" };
       const created: Array<{ title: string; start: string; end: string }> = [];
 
-      // Simple scheduling: for each top assignment, try to find a free peak-hour slot
+      // Build a unified busy-times list from study blocks + Google Calendar
+      const busyTimes: Array<{ start: number; end: number }> = [];
+
+      for (const eb of existingBlocks || []) {
+        busyTimes.push({
+          start: new Date(eb.start_time).getTime(),
+          end: new Date(eb.end_time).getTime(),
+        });
+      }
+      for (const ge of googleEvents) {
+        busyTimes.push({
+          start: new Date(ge.start).getTime(),
+          end: new Date(ge.end).getTime(),
+        });
+      }
+
+      // Schedule study blocks in free peak-hour slots
       for (const assignment of (upcoming || []).slice(0, 5)) {
-        if (created.length >= 5) break; // Max 5 blocks at a time
+        if (created.length >= 5) break;
 
         const dueDate = new Date(assignment.due_date);
-        const now = new Date();
 
-        // Schedule study blocks in the next few days before the due date
         for (let dayOffset = 0; dayOffset < 7 && dayOffset < Math.ceil((dueDate.getTime() - now.getTime()) / 86400000); dayOffset++) {
           if (created.length >= 5) break;
 
           const targetDay = new Date(now);
           targetDay.setDate(now.getDate() + dayOffset);
 
-          // Try each peak hour
           for (const hour of peakHours) {
             if (created.length >= 5) break;
 
@@ -651,7 +879,6 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
             const blockStart = new Date(targetDay);
             blockStart.setHours(h, m || 0, 0, 0);
 
-            // Skip if in the past
             if (blockStart < now) continue;
 
             // Skip if during sleep window
@@ -661,22 +888,18 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
 
             const blockEnd = new Date(blockStart.getTime() + 60 * 60 * 1000); // 1 hour
 
-            // Check for conflicts with existing blocks
-            const hasConflict = (existingBlocks || []).some(
-              (eb: { start_time: string; end_time: string }) => {
-                const ebStart = new Date(eb.start_time).getTime();
-                const ebEnd = new Date(eb.end_time).getTime();
-                return (
-                  blockStart.getTime() < ebEnd && blockEnd.getTime() > ebStart
-                );
-              }
+            // Check against ALL busy times (study blocks + Google Calendar + just-created)
+            const startMs = blockStart.getTime();
+            const endMs = blockEnd.getTime();
+
+            const hasConflict = busyTimes.some(
+              (bt) => startMs < bt.end && endMs > bt.start
             );
 
-            // Also check against just-created blocks
             const hasNewConflict = created.some((c) => {
               const cStart = new Date(c.start).getTime();
               const cEnd = new Date(c.end).getTime();
-              return blockStart.getTime() < cEnd && blockEnd.getTime() > cStart;
+              return startMs < cEnd && endMs > cStart;
             });
 
             if (!hasConflict && !hasNewConflict) {
@@ -703,7 +926,7 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
                   end: blockEnd.toISOString(),
                 });
 
-                // Try to sync to Google Calendar
+                // Sync to Google Calendar
                 try {
                   const accessToken = await getGoogleAccessToken(userId);
                   if (accessToken) {
@@ -732,11 +955,144 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
       return {
         scheduled: created.length,
         blocks: created,
+        google_events_checked: googleEvents.length,
         message:
           created.length > 0
-            ? `Scheduled ${created.length} study block(s) for your upcoming assignments.`
-            : "Could not find available time slots. Try adjusting your peak hours in Settings.",
+            ? `Scheduled ${created.length} study block(s) around your existing ${googleEvents.length} calendar events.`
+            : "Could not find available time slots that don't conflict with your existing calendar. Try adjusting your peak hours in Settings or ask me to schedule at a specific time.",
       };
+    }
+
+    case "mark_email_handled": {
+      await supabase
+        .from("email_summaries")
+        .update({ is_handled: true })
+        .eq("id", args.email_id)
+        .eq("user_id", userId);
+
+      return { updated: true, message: "Email marked as handled." };
+    }
+
+    case "get_course_summary": {
+      const [
+        { data: course },
+        { data: courseAssignments },
+        { data: courseGrades },
+        { data: courseStudyBlocks },
+      ] = await Promise.all([
+        supabase
+          .from("courses")
+          .select("*")
+          .eq("id", args.course_id)
+          .eq("user_id", userId)
+          .single(),
+        supabase
+          .from("assignments")
+          .select("*")
+          .eq("user_id", userId)
+          .eq("course_id", args.course_id)
+          .order("due_date", { ascending: true }),
+        supabase
+          .from("grades")
+          .select("*")
+          .eq("user_id", userId)
+          .eq("course_id", args.course_id)
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("study_blocks")
+          .select("*")
+          .eq("user_id", userId)
+          .eq("course_id", args.course_id)
+          .gte("start_time", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()),
+      ]);
+
+      if (!course) return { error: "Course not found" };
+
+      let weightedSum = 0;
+      let totalWeight = 0;
+      for (const g of courseGrades || []) {
+        if (g.score !== null && g.max_score !== null && g.max_score > 0) {
+          const pct = (g.score / g.max_score) * 100;
+          const w = g.weight || 1;
+          weightedSum += pct * w;
+          totalWeight += w;
+        }
+      }
+
+      const average = totalWeight > 0 ? Math.round((weightedSum / totalWeight) * 10) / 10 : null;
+      const pending = (courseAssignments || []).filter(
+        (a: { status: string }) => a.status !== "completed"
+      );
+      const completed = (courseAssignments || []).filter(
+        (a: { status: string }) => a.status === "completed"
+      );
+      const studyHours = (courseStudyBlocks || [])
+        .filter((b: { status: string }) => b.status === "completed")
+        .reduce(
+          (sum: number, b: { start_time: string; end_time: string }) =>
+            sum + (new Date(b.end_time).getTime() - new Date(b.start_time).getTime()) / 3600000,
+          0
+        );
+
+      return {
+        course: { name: course.name, code: course.code, professor: course.professor },
+        current_average: average,
+        total_grades: (courseGrades || []).length,
+        pending_assignments: pending.length,
+        completed_assignments: completed.length,
+        upcoming: pending.slice(0, 3).map((a: { title: string; due_date: string; status: string }) => ({
+          title: a.title,
+          due_date: a.due_date,
+          status: a.status,
+        })),
+        recent_grades: (courseGrades || []).slice(0, 3).map((g: { title: string; score: number; max_score: number }) => ({
+          title: g.title,
+          score: g.score,
+          max_score: g.max_score,
+        })),
+        study_hours_this_month: Math.round(studyHours * 10) / 10,
+      };
+    }
+
+    case "get_all_courses": {
+      const { data: allCourses } = await supabase
+        .from("courses")
+        .select("id, name, code, color")
+        .eq("user_id", userId);
+
+      return allCourses || [];
+    }
+
+    case "update_profile": {
+      const updates: Record<string, unknown> = {};
+      if (args.productivity_peak_hours) updates.productivity_peak_hours = args.productivity_peak_hours;
+      if (args.sleep_window) updates.sleep_window = args.sleep_window;
+      if (args.escalation_mode) updates.escalation_mode = args.escalation_mode;
+      if (args.gpa_target !== undefined) updates.gpa_target = args.gpa_target;
+      if (args.semester_goals) updates.semester_goals = args.semester_goals;
+
+      if (Object.keys(updates).length === 0) {
+        return { error: "No fields to update" };
+      }
+
+      await supabase
+        .from("profiles")
+        .update(updates)
+        .eq("id", userId);
+
+      return { updated: true, fields: Object.keys(updates), message: "Profile updated." };
+    }
+
+    case "get_profile": {
+      const { data: profileData } = await supabase
+        .from("profiles")
+        .select(
+          "full_name, productivity_peak_hours, sleep_window, escalation_mode, gpa_target, semester_goals, mantras, streak_count, personal_why"
+        )
+        .eq("id", userId)
+        .single();
+
+      return profileData || { error: "Profile not found" };
     }
 
     default:
