@@ -15,26 +15,49 @@ export async function fetchRecentEmails(
   accessToken: string,
   maxResults: number = 20
 ): Promise<GmailMessage[]> {
+  // Use query-based filtering instead of labelIds to catch all emails
+  // including those in categories (Promotions, Updates, Social)
+  const params = new URLSearchParams({
+    maxResults: String(maxResults),
+    q: "newer_than:7d -in:spam -in:trash",
+  });
+
   const listRes = await fetch(
-    `${GMAIL_API_BASE}/messages?maxResults=${maxResults}&labelIds=INBOX`,
+    `${GMAIL_API_BASE}/messages?${params}`,
     { headers: { Authorization: `Bearer ${accessToken}` } }
   );
 
-  if (!listRes.ok) throw new Error(`Gmail API error: ${listRes.statusText}`);
+  if (!listRes.ok) {
+    const errText = await listRes.text();
+    throw new Error(
+      `Gmail API error (${listRes.status}): ${listRes.statusText} — ${errText}`
+    );
+  }
 
   const listData = await listRes.json();
   const messageIds: { id: string }[] = listData.messages || [];
 
-  const messages = await Promise.all(
-    messageIds.map(async ({ id }) => {
-      const msgRes = await fetch(`${GMAIL_API_BASE}/messages/${id}?format=full`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (!msgRes.ok) return null;
-      const msg = await msgRes.json();
-      return parseGmailMessage(msg);
-    })
-  );
+  // Fetch messages in batches of 5 to avoid rate limits
+  const messages: (GmailMessage | null)[] = [];
+  for (let i = 0; i < messageIds.length; i += 5) {
+    const batch = messageIds.slice(i, i + 5);
+    const batchResults = await Promise.all(
+      batch.map(async ({ id }) => {
+        try {
+          const msgRes = await fetch(
+            `${GMAIL_API_BASE}/messages/${id}?format=full`,
+            { headers: { Authorization: `Bearer ${accessToken}` } }
+          );
+          if (!msgRes.ok) return null;
+          const msg = await msgRes.json();
+          return parseGmailMessage(msg);
+        } catch {
+          return null;
+        }
+      })
+    );
+    messages.push(...batchResults);
+  }
 
   return messages.filter((m): m is GmailMessage => m !== null);
 }

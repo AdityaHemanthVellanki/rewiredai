@@ -6,12 +6,16 @@ import {
   GraduationCap,
   Flame,
   Target,
+  Mail,
+  Brain,
+  CheckCircle2,
+  AlertTriangle,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { getEscalationBgColor } from "@/lib/agent/escalation";
-import type { Assignment, Nudge, StudyBlock, Grade, Course } from "@/types";
+import type { Assignment, Nudge, StudyBlock, Grade, Course, EmailSummary } from "@/types";
 
 export default async function DashboardPage() {
   const supabase = await createClient();
@@ -25,10 +29,12 @@ export default async function DashboardPage() {
   const [
     { data: profile },
     { data: assignments },
+    { data: completedAssignments },
     { data: nudges },
     { data: studyBlocks },
     { data: grades },
     { data: courses },
+    { data: emailSummaries },
   ] = await Promise.all([
     supabase.from("profiles").select("*").eq("id", user.id).single(),
     supabase
@@ -38,6 +44,12 @@ export default async function DashboardPage() {
       .neq("status", "completed")
       .order("due_date", { ascending: true })
       .limit(10),
+    supabase
+      .from("assignments")
+      .select("id")
+      .eq("user_id", user.id)
+      .eq("status", "completed")
+      .gte("created_at", new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()),
     supabase
       .from("nudges")
       .select("*, assignment:assignments(*)")
@@ -56,6 +68,12 @@ export default async function DashboardPage() {
       .eq("user_id", user.id)
       .order("created_at", { ascending: false }),
     supabase.from("courses").select("*").eq("user_id", user.id),
+    supabase
+      .from("email_summaries")
+      .select("*")
+      .eq("user_id", user.id)
+      .order("received_at", { ascending: false })
+      .limit(5),
   ]);
 
   const typedAssignments = (assignments || []) as Assignment[];
@@ -63,6 +81,8 @@ export default async function DashboardPage() {
   const typedStudyBlocks = (studyBlocks || []) as StudyBlock[];
   const typedGrades = (grades || []) as Grade[];
   const typedCourses = (courses || []) as Course[];
+  const typedEmails = (emailSummaries || []) as EmailSummary[];
+  const completedThisWeek = (completedAssignments || []).length;
 
   // Calculate study hours this week
   const studyHoursThisWeek = typedStudyBlocks
@@ -96,8 +116,36 @@ export default async function DashboardPage() {
     };
   });
 
-  // Find priority task
-  const priorityTask = typedAssignments[0] || null;
+  // Smart priority task: score by urgency * importance * ignored_count
+  const priorityTask = typedAssignments
+    .filter((a) => a.status !== "completed")
+    .sort((a, b) => {
+      const aHours = Math.max(
+        (new Date(a.due_date).getTime() - Date.now()) / 3600000,
+        0.1
+      );
+      const bHours = Math.max(
+        (new Date(b.due_date).getTime() - Date.now()) / 3600000,
+        0.1
+      );
+      const aScore = (1 / aHours) * (1 + (a.weight || 0)) * (1 + a.ignored_count * 0.5);
+      const bScore = (1 / bHours) * (1 + (b.weight || 0)) * (1 + b.ignored_count * 0.5);
+      return bScore - aScore;
+    })[0] || null;
+
+  // Generate quick insights
+  const insights = generateInsights(
+    typedAssignments,
+    typedGrades,
+    courseGrades,
+    studyHoursThisWeek,
+    completedThisWeek,
+    typedEmails
+  );
+
+  // Separate pending vs overdue for display
+  const overdueCount = typedAssignments.filter((a) => a.status === "overdue").length;
+  const pendingAssignments = typedAssignments.filter((a) => a.status !== "overdue");
 
   return (
     <div className="space-y-6">
@@ -130,8 +178,11 @@ export default async function DashboardPage() {
               </p>
               <p className="text-lg font-semibold">{priorityTask.title}</p>
               <p className="text-sm text-muted-foreground">
-                Due{" "}
-                {formatRelativeDate(priorityTask.due_date)}
+                {priorityTask.status === "overdue" ? (
+                  <span className="text-red-400">OVERDUE</span>
+                ) : (
+                  <>Due {formatRelativeDate(priorityTask.due_date)}</>
+                )}
                 {priorityTask.course && (
                   <span className="ml-2 text-purple-400">
                     • {(priorityTask.course as Course).name}
@@ -139,6 +190,30 @@ export default async function DashboardPage() {
                 )}
               </p>
             </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Agent Insights */}
+      {insights.length > 0 && (
+        <Card className="border-blue-500/20 bg-blue-500/5">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-sm font-medium">
+              <Brain className="h-4 w-4 text-blue-400" />
+              <span className="text-blue-400">Agent Insights</span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {insights.map((insight, i) => (
+              <div key={i} className="flex items-start gap-2">
+                {insight.type === "warning" ? (
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-orange-400" />
+                ) : (
+                  <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-green-400" />
+                )}
+                <p className="text-sm text-muted-foreground">{insight.message}</p>
+              </div>
+            ))}
           </CardContent>
         </Card>
       )}
@@ -154,13 +229,18 @@ export default async function DashboardPage() {
             <Clock className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{typedAssignments.length}</div>
+            <div className="text-2xl font-bold">{pendingAssignments.length}</div>
             <p className="text-xs text-muted-foreground">
-              {typedAssignments.filter((a) => {
+              {pendingAssignments.filter((a) => {
                 const h = (new Date(a.due_date).getTime() - Date.now()) / 3600000;
                 return h <= 72 && h > 0;
               }).length}{" "}
               due within 3 days
+              {overdueCount > 0 && (
+                <span className="ml-1 text-red-400">
+                  • {overdueCount} overdue
+                </span>
+              )}
             </p>
           </CardContent>
         </Card>
@@ -239,10 +319,15 @@ export default async function DashboardPage() {
               typedAssignments.slice(0, 5).map((a) => {
                 const hoursLeft =
                   (new Date(a.due_date).getTime() - Date.now()) / 3600000;
+                const isOverdue = a.status === "overdue";
                 return (
                   <div
                     key={a.id}
-                    className="flex items-center justify-between rounded-lg border border-border/50 p-3"
+                    className={`flex items-center justify-between rounded-lg border p-3 ${
+                      isOverdue
+                        ? "border-red-500/30 bg-red-500/5"
+                        : "border-border/50"
+                    }`}
                   >
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium">{a.title}</p>
@@ -252,14 +337,16 @@ export default async function DashboardPage() {
                       </p>
                     </div>
                     <Badge
-                      variant={hoursLeft <= 24 ? "destructive" : "secondary"}
+                      variant={isOverdue || hoursLeft <= 24 ? "destructive" : "secondary"}
                       className="ml-2 shrink-0"
                     >
-                      {hoursLeft <= 0
+                      {isOverdue
                         ? "OVERDUE"
-                        : hoursLeft <= 24
-                          ? `${Math.round(hoursLeft)}h`
-                          : `${Math.round(hoursLeft / 24)}d`}
+                        : hoursLeft <= 0
+                          ? "OVERDUE"
+                          : hoursLeft <= 24
+                            ? `${Math.round(hoursLeft)}h`
+                            : `${Math.round(hoursLeft / 24)}d`}
                     </Badge>
                   </div>
                 );
@@ -268,20 +355,20 @@ export default async function DashboardPage() {
           </CardContent>
         </Card>
 
-        {/* Recent Nudges */}
+        {/* Recent Nudges & Emails */}
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-lg">
-              <Bell className="h-5 w-5 text-purple-400" />
-              Recent Nudges
+              {typedNudges.length > 0 ? (
+                <Bell className="h-5 w-5 text-purple-400" />
+              ) : (
+                <Mail className="h-5 w-5 text-purple-400" />
+              )}
+              {typedNudges.length > 0 ? "Recent Nudges" : "Latest Emails"}
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            {typedNudges.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No nudges yet. Rewired is watching...
-              </p>
-            ) : (
+            {typedNudges.length > 0 ? (
               typedNudges.slice(0, 5).map((n) => (
                 <div
                   key={n.id}
@@ -298,6 +385,46 @@ export default async function DashboardPage() {
                   <p className="mt-1 text-sm">{n.message}</p>
                 </div>
               ))
+            ) : typedEmails.length > 0 ? (
+              typedEmails.slice(0, 5).map((e) => (
+                <div
+                  key={e.id}
+                  className="rounded-lg border border-border/50 p-3"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="truncate text-sm font-medium">{e.subject}</p>
+                    <Badge
+                      variant="outline"
+                      className={`shrink-0 text-xs capitalize ${
+                        e.category === "professor"
+                          ? "border-blue-500/30 text-blue-400"
+                          : e.category === "financial_aid"
+                            ? "border-green-500/30 text-green-400"
+                            : e.category === "campus_admin"
+                              ? "border-yellow-500/30 text-yellow-400"
+                              : "text-muted-foreground"
+                      }`}
+                    >
+                      {e.category.replace("_", " ")}
+                    </Badge>
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    From: {e.from}
+                  </p>
+                  <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
+                    {e.summary}
+                  </p>
+                  {e.action_required && (
+                    <p className="mt-1 text-xs font-medium text-orange-400">
+                      Action needed{e.suggested_action ? `: ${e.suggested_action}` : ""}
+                    </p>
+                  )}
+                </div>
+              ))
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                No nudges or emails yet. Sync your emails from Settings to get started.
+              </p>
             )}
           </CardContent>
         </Card>
@@ -352,6 +479,82 @@ export default async function DashboardPage() {
       </div>
     </div>
   );
+}
+
+// Generate deterministic insights from available data
+function generateInsights(
+  assignments: Assignment[],
+  grades: Grade[],
+  courseGrades: { course: Course; average: number | null; letterGrade: string }[],
+  studyHours: number,
+  completedThisWeek: number,
+  emails: EmailSummary[]
+): { message: string; type: "info" | "warning" }[] {
+  const insights: { message: string; type: "info" | "warning" }[] = [];
+
+  // Overdue assignments warning
+  const overdueCount = assignments.filter((a) => a.status === "overdue").length;
+  if (overdueCount > 0) {
+    insights.push({
+      message: `You have ${overdueCount} overdue assignment${overdueCount > 1 ? "s" : ""}. Check if you can still submit late — talk to your professor.`,
+      type: "warning",
+    });
+  }
+
+  // Assignments due within 24 hours
+  const urgentCount = assignments.filter((a) => {
+    const h = (new Date(a.due_date).getTime() - Date.now()) / 3600000;
+    return h > 0 && h <= 24 && a.status !== "completed";
+  }).length;
+  if (urgentCount > 0) {
+    insights.push({
+      message: `${urgentCount} assignment${urgentCount > 1 ? "s" : ""} due in the next 24 hours. Focus time!`,
+      type: "warning",
+    });
+  }
+
+  // Dropping grades
+  const droppingCourses = courseGrades.filter(
+    (c) => c.average !== null && c.average < 70
+  );
+  if (droppingCourses.length > 0) {
+    insights.push({
+      message: `Your grade in ${droppingCourses.map((c) => c.course.name).join(", ")} is below C. Consider scheduling extra study time.`,
+      type: "warning",
+    });
+  }
+
+  // Study hours tracking
+  if (studyHours >= 15) {
+    insights.push({
+      message: `Great work! You've studied ${studyHours.toFixed(1)} hours this week.`,
+      type: "info",
+    });
+  } else if (studyHours < 5 && assignments.length > 3) {
+    insights.push({
+      message: `Only ${studyHours.toFixed(1)} study hours logged this week with ${assignments.length} pending assignments. Time to ramp up.`,
+      type: "warning",
+    });
+  }
+
+  // Completed assignments this week
+  if (completedThisWeek > 0) {
+    insights.push({
+      message: `You completed ${completedThisWeek} assignment${completedThisWeek > 1 ? "s" : ""} this week. Keep it up!`,
+      type: "info",
+    });
+  }
+
+  // Action-required emails
+  const actionEmails = emails.filter((e) => e.action_required);
+  if (actionEmails.length > 0) {
+    insights.push({
+      message: `${actionEmails.length} email${actionEmails.length > 1 ? "s" : ""} need${actionEmails.length === 1 ? "s" : ""} your attention${actionEmails[0].suggested_action ? `: "${actionEmails[0].suggested_action}"` : ""}.`,
+      type: "warning",
+    });
+  }
+
+  return insights.slice(0, 4); // Max 4 insights
 }
 
 function formatRelativeDate(dateStr: string): string {

@@ -218,4 +218,40 @@ export const agentTools: ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "sync_canvas",
+      description:
+        "Re-sync assignments, submissions, and grades from Canvas LMS. Updates assignment statuses based on what the student has actually submitted. Use this when the student asks to refresh their Canvas data or when assignment statuses might be stale.",
+      parameters: {
+        type: "object",
+        properties: {},
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "sync_emails",
+      description:
+        "Check for new emails from the student's Gmail. Returns count of new emails found. Use this when the student asks about new emails or wants to check for updates.",
+      parameters: {
+        type: "object",
+        properties: {},
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "auto_schedule_study",
+      description:
+        "Automatically schedule optimal study blocks for the student's upcoming assignments. Considers their peak productivity hours, sleep schedule, existing calendar events, and deadline urgency. Creates up to 5 study blocks and syncs them to Google Calendar.",
+      parameters: {
+        type: "object",
+        properties: {},
+      },
+    },
+  },
 ];

@@ -61,6 +61,19 @@ export async function POST() {
     return NextResponse.json({ error: "Profile not found" }, { status: 404 });
   }
 
+  // Auto-mark past-due assignments as overdue (only if not completed)
+  const now = new Date().toISOString();
+  const pendingPastDue = (assignments || []).filter(
+    (a: { status: string; due_date: string }) =>
+      a.status === "pending" && a.due_date < now
+  );
+  for (const a of pendingPastDue) {
+    await supabase
+      .from("assignments")
+      .update({ status: "overdue" })
+      .eq("id", (a as { id: string }).id);
+  }
+
   const output = await runBackgroundReasoning({
     profile: profile as unknown as Profile,
     assignments: assignments || [],

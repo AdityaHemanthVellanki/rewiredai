@@ -61,13 +61,15 @@ export async function POST() {
     return NextResponse.json({
       processed: 0,
       summaries: [],
-      debug: "Gmail API returned 0 emails. Your inbox may be empty or the API scope wasn't granted.",
+      debug:
+        "Gmail API returned 0 emails. Your inbox may be empty, or the Gmail API scope wasn't granted during login. Try logging out and back in with Google.",
     });
   }
 
   // Use AI to categorize and summarize each email
   const client = getAzureOpenAI();
   const summaries = [];
+  let skipped = 0;
 
   for (const email of emails) {
     // Check if already processed
@@ -78,7 +80,10 @@ export async function POST() {
       .eq("gmail_message_id", email.id)
       .single();
 
-    if (existing) continue;
+    if (existing) {
+      skipped++;
+      continue;
+    }
 
     try {
       const response = await client.chat.completions.create({
@@ -148,5 +153,10 @@ export async function POST() {
     }
   }
 
-  return NextResponse.json({ processed: summaries.length, summaries });
+  return NextResponse.json({
+    processed: summaries.length,
+    skipped,
+    totalFetched: emails.length,
+    summaries,
+  });
 }

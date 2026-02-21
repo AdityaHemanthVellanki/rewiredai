@@ -74,6 +74,7 @@ export interface Assignment {
   reminder_stage: number;
   ignored_count: number;
   confidence_score: number | null;
+  canvas_assignment_id: number | null;
   created_at: string;
   // joined
   course?: Course;

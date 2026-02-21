@@ -143,8 +143,15 @@ function SettingsContent() {
       const res = await fetch("/api/canvas/sync", { method: "POST" });
       const data = await res.json();
       if (res.ok) {
+        const parts = [];
+        if (data.coursesCreated) parts.push(`${data.coursesCreated} new courses`);
+        if (data.assignmentsCreated) parts.push(`${data.assignmentsCreated} new assignments`);
+        if (data.assignmentsUpdated) parts.push(`${data.assignmentsUpdated} assignments updated`);
+        if (data.gradesImported) parts.push(`${data.gradesImported} grades imported`);
         toast.success(
-          `Synced! ${data.coursesCreated} courses, ${data.assignmentsCreated} assignments imported.`
+          parts.length > 0
+            ? `Synced! ${parts.join(", ")}.`
+            : "Canvas is up to date — no new changes."
         );
       } else {
         toast.error(data.error || "Sync failed");

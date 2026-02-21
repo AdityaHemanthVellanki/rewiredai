@@ -47,6 +47,33 @@ export async function GET(request: Request) {
         return NextResponse.redirect(`${origin}/onboarding`);
       }
 
+      // Fire-and-forget: trigger background syncs on login
+      // Canvas sync
+      const { data: canvasConn } = await supabase
+        .from("canvas_connections")
+        .select("id")
+        .eq("user_id", user.id)
+        .single();
+
+      if (canvasConn) {
+        fetch(`${origin}/api/canvas/sync`, {
+          method: "POST",
+          headers: {
+            Cookie: request.headers.get("cookie") || "",
+          },
+        }).catch(() => {});
+      }
+
+      // Email sync
+      if (providerToken) {
+        fetch(`${origin}/api/google/emails`, {
+          method: "POST",
+          headers: {
+            Cookie: request.headers.get("cookie") || "",
+          },
+        }).catch(() => {});
+      }
+
       return NextResponse.redirect(`${origin}${next}`);
     }
   }

@@ -2,9 +2,19 @@ import { createClient } from "@/lib/supabase/server";
 import { getAzureOpenAI } from "@/lib/azure-openai";
 import { buildSystemPrompt } from "@/lib/agent/system-prompt";
 import { agentTools } from "@/lib/agent/tools";
+import { getGoogleAccessToken } from "@/lib/google/auth";
+import { createCalendarEvent } from "@/lib/google/calendar";
+import { fetchRecentEmails } from "@/lib/google/gmail";
+import {
+  fetchCanvasCourses,
+  fetchCanvasAssignments,
+  fetchCanvasSubmissions,
+} from "@/lib/canvas";
 import { NextResponse } from "next/server";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
-import type { Profile } from "@/types";
+import type { Profile, CanvasSubmission } from "@/types";
+
+const MAX_TOOL_ITERATIONS = 8;
 
 // GET — load chat history
 export async function GET() {
@@ -84,9 +94,12 @@ export async function POST(request: Request) {
           ...chatHistory,
         ];
 
-        // Tool execution loop
+        // Tool execution loop with iteration limit
         let continueLoop = true;
-        while (continueLoop) {
+        let iterations = 0;
+        while (continueLoop && iterations < MAX_TOOL_ITERATIONS) {
+          iterations++;
+
           const completion = await client.chat.completions.create({
             model: process.env.AZURE_OPENAI_DEPLOYMENT || "gpt-4o",
             messages,
@@ -103,7 +116,6 @@ export async function POST(request: Request) {
           for await (const chunk of completion) {
             const delta = chunk.choices[0]?.delta;
 
-            // Handle content
             if (delta?.content) {
               fullResponse += delta.content;
               controller.enqueue(
@@ -113,7 +125,6 @@ export async function POST(request: Request) {
               );
             }
 
-            // Handle tool calls
             if (delta?.tool_calls) {
               for (const tc of delta.tool_calls) {
                 if (tc.index !== undefined && tc.index !== currentToolCallIndex) {
@@ -136,7 +147,6 @@ export async function POST(request: Request) {
             }
           }
 
-          // If there are tool calls, execute them and continue
           if (toolCalls.length > 0) {
             messages.push({
               role: "assistant",
@@ -148,9 +158,16 @@ export async function POST(request: Request) {
             });
 
             for (const tc of toolCalls) {
+              let parsedArgs;
+              try {
+                parsedArgs = JSON.parse(tc.function.arguments || "{}");
+              } catch {
+                parsedArgs = {};
+              }
+
               const result = await executeToolCall(
                 tc.function.name,
-                JSON.parse(tc.function.arguments || "{}"),
+                parsedArgs,
                 user.id,
                 supabase
               );
@@ -274,7 +291,36 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
         .select()
         .single();
 
-      return { created: true, studyBlock: data };
+      // Sync to Google Calendar if requested
+      let calendarEventId = null;
+      if (args.sync_to_google && data) {
+        try {
+          const accessToken = await getGoogleAccessToken(userId);
+          if (accessToken) {
+            const calEvent = await createCalendarEvent(accessToken, {
+              summary: `📚 ${args.title}`,
+              description: "Study block created by Rewired AI",
+              startTime: args.start_time,
+              endTime: args.end_time,
+              colorId: "9", // blueberry
+            });
+            calendarEventId = calEvent.id;
+            // Update study block with Google Calendar event ID
+            await supabase
+              .from("study_blocks")
+              .update({ google_event_id: calEvent.id })
+              .eq("id", data.id);
+          }
+        } catch {
+          // Non-critical: calendar sync failed but study block was created
+        }
+      }
+
+      return {
+        created: true,
+        studyBlock: data,
+        google_calendar_synced: !!calendarEventId,
+      };
     }
 
     case "create_nudge": {
@@ -422,6 +468,274 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
           (b: { status: string }) => b.status === "scheduled"
         ).length,
         assignments_completed: (completedAssignments || []).length,
+      };
+    }
+
+    // ============================================
+    // New agentic tools
+    // ============================================
+
+    case "sync_canvas": {
+      const { data: canvasConn } = await supabase
+        .from("canvas_connections")
+        .select("*")
+        .eq("user_id", userId)
+        .single();
+
+      if (!canvasConn) {
+        return { error: "Canvas not connected. Ask the student to connect Canvas in Settings." };
+      }
+
+      try {
+        const baseUrl = canvasConn.canvas_base_url;
+        const token = canvasConn.api_token;
+        const canvasCourses = await fetchCanvasCourses(baseUrl, token);
+        let synced = 0;
+
+        for (const cc of canvasCourses) {
+          if (cc.workflow_state !== "available") continue;
+
+          const { data: course } = await supabase
+            .from("courses")
+            .select("id")
+            .eq("user_id", userId)
+            .eq("code", cc.course_code)
+            .single();
+
+          if (!course) continue;
+
+          try {
+            const [assignments, submissions] = await Promise.all([
+              fetchCanvasAssignments(baseUrl, token, cc.id),
+              fetchCanvasSubmissions(baseUrl, token, cc.id),
+            ]);
+
+            const submissionMap = new Map<number, CanvasSubmission>();
+            for (const sub of submissions) {
+              submissionMap.set(sub.assignment_id, sub);
+            }
+
+            for (const ca of assignments) {
+              if (!ca.due_at) continue;
+              const sub = submissionMap.get(ca.id);
+              const isCompleted =
+                sub !== undefined &&
+                (["submitted", "graded", "complete"].includes(sub.workflow_state) ||
+                  sub.submitted_at !== null);
+
+              let status: string;
+              if (isCompleted) {
+                status = "completed";
+              } else {
+                status = new Date(ca.due_at) < new Date() ? "overdue" : "pending";
+              }
+
+              // Update existing assignments
+              const { data: existing } = await supabase
+                .from("assignments")
+                .select("id")
+                .eq("user_id", userId)
+                .eq("canvas_assignment_id", ca.id)
+                .single();
+
+              if (existing) {
+                await supabase
+                  .from("assignments")
+                  .update({ status })
+                  .eq("id", existing.id);
+                synced++;
+              }
+            }
+          } catch {
+            // Skip course on error
+          }
+        }
+
+        await supabase
+          .from("canvas_connections")
+          .update({ last_synced_at: new Date().toISOString() })
+          .eq("user_id", userId);
+
+        return { synced, message: `Synced ${synced} assignments from Canvas.` };
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : "Canvas sync failed" };
+      }
+    }
+
+    case "sync_emails": {
+      try {
+        const accessToken = await getGoogleAccessToken(userId);
+        if (!accessToken) {
+          return { error: "Google account not connected." };
+        }
+
+        const emails = await fetchRecentEmails(accessToken, 10);
+        let newCount = 0;
+
+        for (const email of emails) {
+          const { data: existing } = await supabase
+            .from("email_summaries")
+            .select("id")
+            .eq("user_id", userId)
+            .eq("gmail_message_id", email.id)
+            .single();
+
+          if (!existing) newCount++;
+        }
+
+        return {
+          fetched: emails.length,
+          new: newCount,
+          message: newCount > 0
+            ? `Found ${newCount} new email(s). Use the Settings page to process them with AI.`
+            : "No new emails since last sync.",
+        };
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : "Email sync failed" };
+      }
+    }
+
+    case "auto_schedule_study": {
+      // Get profile for peak hours and sleep window
+      const { data: profileData } = await supabase
+        .from("profiles")
+        .select("productivity_peak_hours, sleep_window, timezone")
+        .eq("id", userId)
+        .single();
+
+      // Get upcoming deadlines
+      const { data: upcoming } = await supabase
+        .from("assignments")
+        .select("*, course:courses(name)")
+        .eq("user_id", userId)
+        .neq("status", "completed")
+        .order("due_date", { ascending: true })
+        .limit(10);
+
+      // Get existing study blocks for the next 7 days
+      const nextWeek = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+      const { data: existingBlocks } = await supabase
+        .from("study_blocks")
+        .select("*")
+        .eq("user_id", userId)
+        .gte("start_time", new Date().toISOString())
+        .lte("start_time", nextWeek);
+
+      if (!upcoming || upcoming.length === 0) {
+        return { message: "No upcoming assignments to schedule study time for." };
+      }
+
+      const peakHours = profileData?.productivity_peak_hours || ["09:00", "10:00", "14:00", "15:00"];
+      const sleepWindow = profileData?.sleep_window || { sleep: "23:00", wake: "08:00" };
+      const created: Array<{ title: string; start: string; end: string }> = [];
+
+      // Simple scheduling: for each top assignment, try to find a free peak-hour slot
+      for (const assignment of (upcoming || []).slice(0, 5)) {
+        if (created.length >= 5) break; // Max 5 blocks at a time
+
+        const dueDate = new Date(assignment.due_date);
+        const now = new Date();
+
+        // Schedule study blocks in the next few days before the due date
+        for (let dayOffset = 0; dayOffset < 7 && dayOffset < Math.ceil((dueDate.getTime() - now.getTime()) / 86400000); dayOffset++) {
+          if (created.length >= 5) break;
+
+          const targetDay = new Date(now);
+          targetDay.setDate(now.getDate() + dayOffset);
+
+          // Try each peak hour
+          for (const hour of peakHours) {
+            if (created.length >= 5) break;
+
+            const [h, m] = hour.split(":").map(Number);
+            const blockStart = new Date(targetDay);
+            blockStart.setHours(h, m || 0, 0, 0);
+
+            // Skip if in the past
+            if (blockStart < now) continue;
+
+            // Skip if during sleep window
+            const sleepH = parseInt(sleepWindow.sleep?.split(":")[0] || "23");
+            const wakeH = parseInt(sleepWindow.wake?.split(":")[0] || "8");
+            if (h >= sleepH || h < wakeH) continue;
+
+            const blockEnd = new Date(blockStart.getTime() + 60 * 60 * 1000); // 1 hour
+
+            // Check for conflicts with existing blocks
+            const hasConflict = (existingBlocks || []).some(
+              (eb: { start_time: string; end_time: string }) => {
+                const ebStart = new Date(eb.start_time).getTime();
+                const ebEnd = new Date(eb.end_time).getTime();
+                return (
+                  blockStart.getTime() < ebEnd && blockEnd.getTime() > ebStart
+                );
+              }
+            );
+
+            // Also check against just-created blocks
+            const hasNewConflict = created.some((c) => {
+              const cStart = new Date(c.start).getTime();
+              const cEnd = new Date(c.end).getTime();
+              return blockStart.getTime() < cEnd && blockEnd.getTime() > cStart;
+            });
+
+            if (!hasConflict && !hasNewConflict) {
+              const courseName = assignment.course?.name || "Study";
+              const title = `Study: ${assignment.title} (${courseName})`;
+
+              const { data: newBlock } = await supabase
+                .from("study_blocks")
+                .insert({
+                  user_id: userId,
+                  title,
+                  course_id: assignment.course_id || null,
+                  assignment_id: assignment.id,
+                  start_time: blockStart.toISOString(),
+                  end_time: blockEnd.toISOString(),
+                })
+                .select()
+                .single();
+
+              if (newBlock) {
+                created.push({
+                  title,
+                  start: blockStart.toISOString(),
+                  end: blockEnd.toISOString(),
+                });
+
+                // Try to sync to Google Calendar
+                try {
+                  const accessToken = await getGoogleAccessToken(userId);
+                  if (accessToken) {
+                    const calEvent = await createCalendarEvent(accessToken, {
+                      summary: `📚 ${title}`,
+                      description: `Study block for: ${assignment.title}`,
+                      startTime: blockStart.toISOString(),
+                      endTime: blockEnd.toISOString(),
+                      colorId: "9",
+                    });
+                    await supabase
+                      .from("study_blocks")
+                      .update({ google_event_id: calEvent.id })
+                      .eq("id", newBlock.id);
+                  }
+                } catch {
+                  // Non-critical
+                }
+              }
+              break; // Move to next assignment after scheduling one block
+            }
+          }
+        }
+      }
+
+      return {
+        scheduled: created.length,
+        blocks: created,
+        message:
+          created.length > 0
+            ? `Scheduled ${created.length} study block(s) for your upcoming assignments.`
+            : "Could not find available time slots. Try adjusting your peak hours in Settings.",
       };
     }
 

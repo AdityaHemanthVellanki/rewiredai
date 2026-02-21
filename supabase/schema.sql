@@ -106,6 +106,7 @@ create table if not exists assignments (
   reminder_stage int default 0,
   ignored_count int default 0,
   confidence_score numeric,
+  canvas_assignment_id bigint,
   created_at timestamptz default now()
 );
 
@@ -295,3 +296,4 @@ create index if not exists idx_chat_messages_user on chat_messages(user_id, crea
 create index if not exists idx_nudges_user_status on nudges(user_id, status);
 create index if not exists idx_email_summaries_user on email_summaries(user_id, created_at);
 create index if not exists idx_mood_entries_user on mood_entries(user_id, created_at);
+create index if not exists idx_assignments_canvas_id on assignments(canvas_assignment_id);
