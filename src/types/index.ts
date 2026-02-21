@@ -200,3 +200,55 @@ export interface AgentActivity {
   metadata: Record<string, unknown> | null;
   created_at: string;
 }
+
+// --- Canvas LMS Connection ---
+export interface CanvasConnection {
+  id: string;
+  user_id: string;
+  canvas_base_url: string;
+  access_token: string;
+  refresh_token: string | null;
+  token_expires_at: string | null;
+  student_name: string | null;
+  last_synced_at: string | null;
+  created_at: string;
+}
+
+// --- Canvas API Types ---
+export interface CanvasCourse {
+  id: number;
+  name: string;
+  course_code: string;
+  enrollment_term_id: number;
+  workflow_state: string;
+  enrollments?: CanvasEnrollment[];
+}
+
+export interface CanvasAssignment {
+  id: number;
+  name: string;
+  description: string | null;
+  due_at: string | null;
+  points_possible: number | null;
+  course_id: number;
+  html_url: string;
+  submission_types: string[];
+  has_submitted_submissions: boolean;
+}
+
+export interface CanvasSubmission {
+  id: number;
+  assignment_id: number;
+  score: number | null;
+  grade: string | null;
+  submitted_at: string | null;
+  workflow_state: string;
+}
+
+export interface CanvasEnrollment {
+  type: string;
+  computed_current_score: number | null;
+  computed_current_grade: string | null;
+  computed_final_score: number | null;
+  computed_final_grade: string | null;
+}

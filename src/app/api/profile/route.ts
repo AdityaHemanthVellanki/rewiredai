@@ -19,12 +19,21 @@ export async function GET() {
 
   const { data: googleAccounts } = await supabase
     .from("google_accounts")
-    .select("id")
+    .select("id, google_email")
     .eq("user_id", user.id);
+
+  const { data: canvasConn } = await supabase
+    .from("canvas_connections")
+    .select("id, canvas_base_url, student_name, last_synced_at")
+    .eq("user_id", user.id)
+    .single();
 
   return NextResponse.json({
     profile,
     googleConnected: (googleAccounts || []).length > 0,
+    googleEmail: googleAccounts?.[0]?.google_email || null,
+    canvasConnected: !!canvasConn,
+    canvasInfo: canvasConn || null,
   });
 }
 

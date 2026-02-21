@@ -1,30 +1,68 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { Suspense, useState, useEffect } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   User,
-  Shield,
   Bell,
   Clock,
   Target,
   Link2,
   Loader2,
   Check,
+  RefreshCw,
+  Mail,
+  Calendar,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import type { Profile } from "@/types";
 
+interface CanvasInfo {
+  id: string;
+  canvas_base_url: string;
+  student_name: string | null;
+  last_synced_at: string | null;
+}
+
 export default function SettingsPage() {
+  return (
+    <Suspense fallback={<div className="flex h-64 items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>}>
+      <SettingsContent />
+    </Suspense>
+  );
+}
+
+function SettingsContent() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [googleConnected, setGoogleConnected] = useState(false);
+  const [googleEmail, setGoogleEmail] = useState<string | null>(null);
+  const [canvasConnected, setCanvasConnected] = useState(false);
+  const [canvasInfo, setCanvasInfo] = useState<CanvasInfo | null>(null);
+
+  const [isConnectingCanvas, setIsConnectingCanvas] = useState(false);
+  const [isSyncingCanvas, setIsSyncingCanvas] = useState(false);
+  const [isSyncingEmails, setIsSyncingEmails] = useState(false);
+
+  const searchParams = useSearchParams();
+
+  // Check for Canvas OAuth callback
+  useEffect(() => {
+    if (searchParams.get("canvas") === "connected") {
+      setCanvasConnected(true);
+      toast.success("Canvas connected!");
+    }
+    if (searchParams.get("error")?.startsWith("canvas")) {
+      toast.error("Canvas connection failed. Try again.");
+    }
+  }, [searchParams]);
 
   useEffect(() => {
     async function load() {
@@ -34,6 +72,9 @@ export default function SettingsPage() {
           const data = await res.json();
           setProfile(data.profile);
           setGoogleConnected(data.googleConnected);
+          setGoogleEmail(data.googleEmail);
+          setCanvasConnected(data.canvasConnected);
+          setCanvasInfo(data.canvasInfo);
         }
       } catch {
         toast.error("Failed to load settings");
@@ -63,15 +104,71 @@ export default function SettingsPage() {
     }
   }
 
-  async function connectGoogle() {
+  async function connectCanvas() {
+    setIsConnectingCanvas(true);
     try {
-      const res = await fetch("/api/google/connect");
-      if (res.ok) {
-        const data = await res.json();
+      const res = await fetch("/api/canvas/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ redirectTo: "/settings" }),
+      });
+      const data = await res.json();
+      if (res.ok && data.url) {
         window.location.href = data.url;
+      } else {
+        toast.error(data.error || "Failed to start Canvas login");
+        setIsConnectingCanvas(false);
       }
     } catch {
-      toast.error("Failed to start Google connection");
+      toast.error("Failed to start Canvas login");
+      setIsConnectingCanvas(false);
+    }
+  }
+
+  async function disconnectCanvas() {
+    try {
+      await fetch("/api/canvas/connect", { method: "DELETE" });
+      setCanvasConnected(false);
+      setCanvasInfo(null);
+      toast.success("Canvas disconnected");
+    } catch {
+      toast.error("Failed to disconnect Canvas");
+    }
+  }
+
+  async function syncCanvas() {
+    setIsSyncingCanvas(true);
+    try {
+      const res = await fetch("/api/canvas/sync", { method: "POST" });
+      const data = await res.json();
+      if (res.ok) {
+        toast.success(
+          `Synced! ${data.coursesCreated} courses, ${data.assignmentsCreated} assignments imported.`
+        );
+      } else {
+        toast.error(data.error || "Sync failed");
+      }
+    } catch {
+      toast.error("Failed to sync with Canvas");
+    } finally {
+      setIsSyncingCanvas(false);
+    }
+  }
+
+  async function syncEmails() {
+    setIsSyncingEmails(true);
+    try {
+      const res = await fetch("/api/google/emails", { method: "POST" });
+      const data = await res.json();
+      if (res.ok) {
+        toast.success(`Processed ${data.processed} new emails`);
+      } else {
+        toast.error(data.error || "Email sync failed");
+      }
+    } catch {
+      toast.error("Failed to sync emails");
+    } finally {
+      setIsSyncingEmails(false);
     }
   }
 
@@ -88,9 +185,169 @@ export default function SettingsPage() {
       <div>
         <h1 className="text-2xl font-bold">Settings</h1>
         <p className="text-muted-foreground">
-          Customize your Rewired experience.
+          Customize your Rewired experience and manage integrations.
         </p>
       </div>
+
+      {/* Integrations */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Link2 className="h-5 w-5 text-purple-400" />
+            Integrations
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Google — auto-connected via login */}
+          <div className="rounded-lg border border-border/50 p-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <svg className="h-6 w-6" viewBox="0 0 24 24">
+                  <path
+                    d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"
+                    fill="#4285F4"
+                  />
+                  <path
+                    d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                    fill="#34A853"
+                  />
+                  <path
+                    d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
+                    fill="#FBBC05"
+                  />
+                  <path
+                    d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
+                    fill="#EA4335"
+                  />
+                </svg>
+                <div>
+                  <p className="text-sm font-medium">Google</p>
+                  <p className="text-xs text-muted-foreground">
+                    {googleConnected
+                      ? `Connected as ${googleEmail || "your Google account"}`
+                      : "Sign in with Google to connect"}
+                  </p>
+                </div>
+              </div>
+              {googleConnected ? (
+                <Badge className="bg-green-500/10 text-green-400">
+                  <Check className="mr-1 h-3 w-3" /> Connected
+                </Badge>
+              ) : (
+                <Badge variant="outline" className="text-muted-foreground">
+                  Not connected
+                </Badge>
+              )}
+            </div>
+
+            {googleConnected && (
+              <div className="mt-3 flex gap-2">
+                <Button
+                  onClick={syncEmails}
+                  disabled={isSyncingEmails}
+                  variant="outline"
+                  size="sm"
+                  className="gap-2"
+                >
+                  {isSyncingEmails ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Mail className="h-3 w-3" />
+                  )}
+                  Sync Emails
+                </Button>
+                <Button variant="outline" size="sm" className="gap-2" asChild>
+                  <a href="/schedule">
+                    <Calendar className="h-3 w-3" />
+                    View Calendar
+                  </a>
+                </Button>
+              </div>
+            )}
+          </div>
+
+          {/* Canvas LMS */}
+          <div className="rounded-lg border border-border/50 p-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="flex h-6 w-6 items-center justify-center rounded bg-red-600 text-white text-xs font-bold">
+                  C
+                </div>
+                <div>
+                  <p className="text-sm font-medium">Canvas LMS</p>
+                  <p className="text-xs text-muted-foreground">
+                    {canvasConnected
+                      ? `Connected as ${canvasInfo?.student_name || "student"}`
+                      : "Import courses, assignments, and grades"}
+                  </p>
+                </div>
+              </div>
+              {canvasConnected ? (
+                <Badge className="bg-green-500/10 text-green-400">
+                  <Check className="mr-1 h-3 w-3" /> Connected
+                </Badge>
+              ) : (
+                <Badge variant="outline" className="text-muted-foreground">
+                  Not connected
+                </Badge>
+              )}
+            </div>
+
+            {canvasConnected ? (
+              <div className="mt-3 space-y-2">
+                <p className="text-xs text-muted-foreground">
+                  {canvasInfo?.canvas_base_url}
+                  {canvasInfo?.last_synced_at &&
+                    ` — Last synced: ${new Date(canvasInfo.last_synced_at).toLocaleString()}`}
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={syncCanvas}
+                    disabled={isSyncingCanvas}
+                    variant="outline"
+                    size="sm"
+                    className="gap-2"
+                  >
+                    {isSyncingCanvas ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-3 w-3" />
+                    )}
+                    Sync Now
+                  </Button>
+                  <Button
+                    onClick={disconnectCanvas}
+                    variant="outline"
+                    size="sm"
+                    className="gap-2 text-red-400 hover:text-red-300"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                    Disconnect
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-3">
+                <Button
+                  onClick={connectCanvas}
+                  disabled={isConnectingCanvas}
+                  size="sm"
+                  className="gap-2 bg-red-600 hover:bg-red-700 text-white"
+                >
+                  {isConnectingCanvas ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <div className="flex h-4 w-4 items-center justify-center rounded bg-white/20 text-[10px] font-bold">
+                      C
+                    </div>
+                  )}
+                  Login with Canvas
+                </Button>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Profile */}
       <Card>
@@ -285,55 +542,6 @@ export default function SettingsPage() {
                 </p>
               </button>
             ))}
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Google Connection */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Link2 className="h-5 w-5 text-purple-400" />
-            Connected Accounts
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center justify-between rounded-lg border border-border/50 p-4">
-            <div className="flex items-center gap-3">
-              <svg className="h-6 w-6" viewBox="0 0 24 24">
-                <path
-                  d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"
-                  fill="#4285F4"
-                />
-                <path
-                  d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                  fill="#34A853"
-                />
-                <path
-                  d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
-                  fill="#FBBC05"
-                />
-                <path
-                  d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
-                  fill="#EA4335"
-                />
-              </svg>
-              <div>
-                <p className="text-sm font-medium">Google</p>
-                <p className="text-xs text-muted-foreground">
-                  Gmail + Calendar access
-                </p>
-              </div>
-            </div>
-            {googleConnected ? (
-              <Badge className="bg-green-500/10 text-green-400">
-                <Check className="mr-1 h-3 w-3" /> Connected
-              </Badge>
-            ) : (
-              <Button onClick={connectGoogle} variant="outline" size="sm">
-                Connect
-              </Button>
-            )}
           </div>
         </CardContent>
       </Card>

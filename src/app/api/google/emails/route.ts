@@ -1,5 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
-import { getValidAccessToken } from "@/lib/google/auth";
+import { getGoogleAccessToken } from "@/lib/google/auth";
 import { fetchRecentEmails } from "@/lib/google/gmail";
 import { getAzureOpenAI } from "@/lib/azure-openai";
 import { NextResponse } from "next/server";
@@ -14,35 +14,12 @@ export async function POST() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Get Google account
-  const { data: googleAccount } = await supabase
-    .from("google_accounts")
-    .select("*")
-    .eq("user_id", user.id)
-    .single();
-
-  if (!googleAccount) {
+  const accessToken = await getGoogleAccessToken(user.id);
+  if (!accessToken) {
     return NextResponse.json(
-      { error: "Google account not connected" },
+      { error: "Google account not connected. Please log in again with Google." },
       { status: 400 }
     );
-  }
-
-  // Refresh token if needed
-  const { accessToken, refreshed, expiresAt } = await getValidAccessToken(
-    googleAccount.access_token,
-    googleAccount.refresh_token,
-    new Date(googleAccount.token_expires_at)
-  );
-
-  if (refreshed && expiresAt) {
-    await supabase
-      .from("google_accounts")
-      .update({
-        access_token: accessToken,
-        token_expires_at: expiresAt.toISOString(),
-      })
-      .eq("id", googleAccount.id);
   }
 
   // Fetch emails

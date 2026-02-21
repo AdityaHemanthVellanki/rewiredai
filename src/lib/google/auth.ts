@@ -1,52 +1,10 @@
-const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
+import { createClient } from "@/lib/supabase/server";
+
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 
-const SCOPES = [
-  "https://www.googleapis.com/auth/gmail.readonly",
-  "https://www.googleapis.com/auth/calendar",
-  "https://www.googleapis.com/auth/calendar.events",
-].join(" ");
-
-export function getGoogleAuthUrl(state: string): string {
-  const params = new URLSearchParams({
-    client_id: process.env.GOOGLE_CLIENT_ID!,
-    redirect_uri: process.env.GOOGLE_REDIRECT_URI!,
-    response_type: "code",
-    scope: SCOPES,
-    access_type: "offline",
-    prompt: "consent",
-    state,
-  });
-
-  return `${GOOGLE_AUTH_URL}?${params.toString()}`;
-}
-
-export async function exchangeCodeForTokens(code: string) {
-  const response = await fetch(GOOGLE_TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      code,
-      client_id: process.env.GOOGLE_CLIENT_ID!,
-      client_secret: process.env.GOOGLE_CLIENT_SECRET!,
-      redirect_uri: process.env.GOOGLE_REDIRECT_URI!,
-      grant_type: "authorization_code",
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to exchange code: ${response.statusText}`);
-  }
-
-  return response.json() as Promise<{
-    access_token: string;
-    refresh_token: string;
-    expires_in: number;
-    token_type: string;
-    scope: string;
-  }>;
-}
-
+/**
+ * Refreshes a Google access token using a refresh token.
+ */
 export async function refreshAccessToken(refreshToken: string) {
   const response = await fetch(GOOGLE_TOKEN_URL, {
     method: "POST",
@@ -69,19 +27,51 @@ export async function refreshAccessToken(refreshToken: string) {
   }>;
 }
 
-export async function getValidAccessToken(
-  accessToken: string,
-  refreshToken: string,
-  expiresAt: Date
-): Promise<{ accessToken: string; refreshed: boolean; expiresAt?: Date }> {
-  if (new Date() < new Date(expiresAt.getTime() - 5 * 60 * 1000)) {
-    return { accessToken, refreshed: false };
+/**
+ * Gets a valid Google access token for the current user.
+ * Automatically refreshes if expired and updates the DB.
+ */
+export async function getGoogleAccessToken(
+  userId: string
+): Promise<string | null> {
+  const supabase = await createClient();
+
+  const { data: googleAccount } = await supabase
+    .from("google_accounts")
+    .select("*")
+    .eq("user_id", userId)
+    .single();
+
+  if (!googleAccount) return null;
+
+  const expiresAt = new Date(googleAccount.token_expires_at);
+  const now = new Date();
+
+  // If token is still valid (with 5 min buffer), return it
+  if (now < new Date(expiresAt.getTime() - 5 * 60 * 1000)) {
+    return googleAccount.access_token;
   }
 
-  const tokens = await refreshAccessToken(refreshToken);
-  return {
-    accessToken: tokens.access_token,
-    refreshed: true,
-    expiresAt: new Date(Date.now() + tokens.expires_in * 1000),
-  };
+  // Token expired — refresh it
+  if (!googleAccount.refresh_token) return null;
+
+  try {
+    const tokens = await refreshAccessToken(googleAccount.refresh_token);
+
+    const newExpiresAt = new Date(
+      Date.now() + tokens.expires_in * 1000
+    ).toISOString();
+
+    await supabase
+      .from("google_accounts")
+      .update({
+        access_token: tokens.access_token,
+        token_expires_at: newExpiresAt,
+      })
+      .eq("id", googleAccount.id);
+
+    return tokens.access_token;
+  } catch {
+    return null;
+  }
 }

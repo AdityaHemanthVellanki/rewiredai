@@ -2,6 +2,14 @@
 -- Rewired — Database Schema
 -- Run this in Supabase SQL Editor
 -- ============================================
+--
+-- IMPORTANT: Also create a Storage bucket for avatars:
+--   1. Go to Supabase Dashboard → Storage
+--   2. Create a new bucket called "avatars"
+--   3. Set it to Public
+--   4. Add a policy: allow authenticated users to upload/update/delete
+--      their own files (path starts with their user ID)
+-- ============================================
 
 -- Profiles (extends Supabase auth.users)
 create table if not exists profiles (
@@ -44,15 +52,28 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
 
--- Google connected accounts
+-- Google connected accounts (tokens from Supabase Google OAuth)
 create table if not exists google_accounts (
   id uuid primary key default gen_random_uuid(),
-  user_id uuid references profiles(id) on delete cascade not null,
+  user_id uuid references profiles(id) on delete cascade not null unique,
   google_email text not null,
   access_token text not null,
   refresh_token text not null,
   token_expires_at timestamptz not null,
   scopes text[] not null,
+  created_at timestamptz default now()
+);
+
+-- Canvas LMS connections (OAuth tokens from Canvas)
+create table if not exists canvas_connections (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references profiles(id) on delete cascade not null unique,
+  canvas_base_url text not null,
+  access_token text not null,
+  refresh_token text,
+  token_expires_at timestamptz,
+  student_name text,
+  last_synced_at timestamptz,
   created_at timestamptz default now()
 );
 
@@ -197,6 +218,7 @@ create table if not exists agent_activity_log (
 
 alter table profiles enable row level security;
 alter table google_accounts enable row level security;
+alter table canvas_connections enable row level security;
 alter table courses enable row level security;
 alter table assignments enable row level security;
 alter table grades enable row level security;
@@ -214,6 +236,9 @@ create policy "Users can update own profile" on profiles for update using (auth.
 
 -- Google accounts: users manage their own
 create policy "Users can manage own google accounts" on google_accounts for all using (auth.uid() = user_id);
+
+-- Canvas connections
+create policy "Users can manage own canvas connections" on canvas_connections for all using (auth.uid() = user_id);
 
 -- Courses
 create policy "Users can manage own courses" on courses for all using (auth.uid() = user_id);
