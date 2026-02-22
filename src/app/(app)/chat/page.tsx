@@ -1,17 +1,78 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Send, Sparkles, Loader2 } from "lucide-react";
+import { Send, Sparkles, Loader2, BookOpen, Calendar, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+
+interface EventCard {
+  type: "study_block_created" | "calendar_event_created";
+  title: string;
+  start: string;
+  end: string;
+  id: string;
+}
 
 interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
   created_at: string;
+  eventCards?: EventCard[];
+}
+
+function EventCardComponent({ card }: { card: EventCard }) {
+  const isStudyBlock = card.type === "study_block_created";
+
+  const startDate = new Date(card.start);
+  const endDate = new Date(card.end);
+  const timeRange = `${startDate.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} – ${endDate.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+  const dateLabel = startDate.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+
+  return (
+    <div
+      className={cn(
+        "mt-2 rounded-xl border p-3 text-sm",
+        isStudyBlock
+          ? "bg-purple-500/10 border-purple-500/30"
+          : "bg-blue-500/10 border-blue-500/30"
+      )}
+    >
+      <div className="flex items-start gap-2">
+        {isStudyBlock ? (
+          <BookOpen className="h-4 w-4 mt-0.5 shrink-0 text-purple-400" />
+        ) : (
+          <Calendar className="h-4 w-4 mt-0.5 shrink-0 text-blue-400" />
+        )}
+        <div className="min-w-0 flex-1">
+          <p
+            className={cn(
+              "truncate font-medium",
+              isStudyBlock ? "text-purple-300" : "text-blue-300"
+            )}
+          >
+            {card.title}
+          </p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            {dateLabel} · {timeRange}
+          </p>
+        </div>
+        <a
+          href="/schedule"
+          className={cn(
+            "flex shrink-0 items-center gap-1 text-xs transition-colors",
+            isStudyBlock
+              ? "text-purple-400 hover:text-purple-300"
+              : "text-blue-400 hover:text-blue-300"
+          )}
+        >
+          View <ExternalLink className="h-3 w-3" />
+        </a>
+      </div>
+    </div>
+  );
 }
 
 const quickActions = [
@@ -114,6 +175,15 @@ export default function ChatPage() {
                       ...prev.slice(0, -1),
                       { ...assistantMessage },
                     ]);
+                  } else if (parsed.event_card) {
+                    assistantMessage.eventCards = [
+                      ...(assistantMessage.eventCards || []),
+                      parsed.event_card,
+                    ];
+                    setMessages((prev) => [
+                      ...prev.slice(0, -1),
+                      { ...assistantMessage },
+                    ]);
                   }
                 } catch {
                   // Not JSON, treat as plain text
@@ -191,15 +261,20 @@ export default function ChatPage() {
                   msg.role === "user" ? "justify-end" : "justify-start"
                 )}
               >
-                <div
-                  className={cn(
-                    "max-w-[80%] rounded-2xl px-4 py-3",
-                    msg.role === "user"
-                      ? "bg-purple-600 text-white"
-                      : "bg-card border border-border/50"
-                  )}
-                >
-                  <p className="whitespace-pre-wrap text-sm">{msg.content}</p>
+                <div className="max-w-[80%]">
+                  <div
+                    className={cn(
+                      "rounded-2xl px-4 py-3",
+                      msg.role === "user"
+                        ? "bg-purple-600 text-white"
+                        : "bg-card border border-border/50"
+                    )}
+                  >
+                    <p className="whitespace-pre-wrap text-sm">{msg.content}</p>
+                  </div>
+                  {msg.eventCards?.map((card, i) => (
+                    <EventCardComponent key={i} card={card} />
+                  ))}
                 </div>
               </div>
             ))}

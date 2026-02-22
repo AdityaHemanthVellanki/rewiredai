@@ -39,10 +39,9 @@ export async function POST(request: Request) {
   try {
     // Parse PDF
     const buffer = Buffer.from(await file.arrayBuffer());
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const parser = new PDFParse(buffer) as any;
-    await parser.load();
-    const pdfText: string = parser.getText();
+    const parser = new PDFParse({ data: buffer });
+    const textResult = await parser.getText();
+    const pdfText: string = textResult.text;
 
     if (!pdfText.trim()) {
       return NextResponse.json(

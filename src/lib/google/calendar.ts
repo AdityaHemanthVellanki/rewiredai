@@ -72,6 +72,51 @@ export async function createCalendarEvent(
   return res.json();
 }
 
+export async function updateCalendarEvent(
+  accessToken: string,
+  eventId: string,
+  updates: {
+    summary?: string;
+    description?: string;
+    startTime?: string;
+    endTime?: string;
+    timeZone?: string;
+    colorId?: string;
+  }
+): Promise<CalendarEvent> {
+  const body: Record<string, unknown> = {};
+  if (updates.summary !== undefined) body.summary = updates.summary;
+  if (updates.description !== undefined) body.description = updates.description;
+  if (updates.startTime) {
+    body.start = {
+      dateTime: updates.startTime,
+      timeZone: updates.timeZone || "America/New_York",
+    };
+  }
+  if (updates.endTime) {
+    body.end = {
+      dateTime: updates.endTime,
+      timeZone: updates.timeZone || "America/New_York",
+    };
+  }
+  if (updates.colorId) body.colorId = updates.colorId;
+
+  const res = await fetch(
+    `${CALENDAR_API_BASE}/calendars/primary/events/${eventId}`,
+    {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!res.ok) throw new Error(`Failed to update event: ${res.statusText}`);
+  return res.json();
+}
+
 export async function deleteCalendarEvent(
   accessToken: string,
   eventId: string

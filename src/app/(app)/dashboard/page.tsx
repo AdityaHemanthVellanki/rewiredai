@@ -1,21 +1,29 @@
 import { createClient } from "@/lib/supabase/server";
 import {
   Clock,
-  Bell,
-  BookOpen,
   GraduationCap,
   Flame,
   Target,
-  Mail,
   Brain,
   CheckCircle2,
   AlertTriangle,
+  TrendingUp,
+  BarChart3,
+  CalendarDays,
+  Sparkles,
+  ArrowRight,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
-import { getEscalationBgColor } from "@/lib/agent/escalation";
 import type { Assignment, Nudge, StudyBlock, Grade, Course, EmailSummary } from "@/types";
+
+// Dashboard visualization components
+import { GpaChart } from "@/components/dashboard/gpa-chart";
+import { CourseHealthGrid } from "@/components/dashboard/course-health";
+import { StudyAnalytics } from "@/components/dashboard/study-analytics";
+import { DeadlinePipeline } from "@/components/dashboard/deadline-pipeline";
+import { TodaysPlan } from "@/components/dashboard/todays-plan";
+import { ActivityFeed } from "@/components/dashboard/activity-feed";
 
 export default async function DashboardPage() {
   const supabase = await createClient();
@@ -32,9 +40,11 @@ export default async function DashboardPage() {
     { data: completedAssignments },
     { data: nudges },
     { data: studyBlocks },
+    { data: todayStudyBlocks },
     { data: grades },
     { data: courses },
     { data: emailSummaries },
+    { data: agentLogs },
   ] = await Promise.all([
     supabase.from("profiles").select("*").eq("id", user.id).single(),
     supabase
@@ -43,30 +53,44 @@ export default async function DashboardPage() {
       .eq("user_id", user.id)
       .neq("status", "completed")
       .order("due_date", { ascending: true })
-      .limit(10),
+      .limit(15),
     supabase
       .from("assignments")
       .select("id")
       .eq("user_id", user.id)
       .eq("status", "completed")
-      .gte("created_at", new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()),
+      .gte(
+        "created_at",
+        new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+      ),
     supabase
       .from("nudges")
       .select("*, assignment:assignments(*)")
       .eq("user_id", user.id)
       .order("created_at", { ascending: false })
-      .limit(5),
+      .limit(8),
+    // Study blocks from past 14 days for analytics
     supabase
       .from("study_blocks")
-      .select("*")
+      .select("*, course:courses(*)")
       .eq("user_id", user.id)
-      .gte("start_time", new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
-      .lte("start_time", new Date().toISOString()),
+      .gte(
+        "start_time",
+        new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString()
+      ),
+    // Today's study blocks
+    supabase
+      .from("study_blocks")
+      .select("*, course:courses(*)")
+      .eq("user_id", user.id)
+      .gte("start_time", new Date().toISOString().split("T")[0] + "T00:00:00")
+      .lte("start_time", new Date().toISOString().split("T")[0] + "T23:59:59")
+      .order("start_time"),
     supabase
       .from("grades")
       .select("*, course:courses(*)")
       .eq("user_id", user.id)
-      .order("created_at", { ascending: false }),
+      .order("created_at", { ascending: true }),
     supabase.from("courses").select("*").eq("user_id", user.id),
     supabase
       .from("email_summaries")
@@ -74,18 +98,41 @@ export default async function DashboardPage() {
       .eq("user_id", user.id)
       .order("received_at", { ascending: false })
       .limit(5),
+    supabase
+      .from("agent_activity_log")
+      .select("*")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false })
+      .limit(3),
   ]);
 
   const typedAssignments = (assignments || []) as Assignment[];
   const typedNudges = (nudges || []) as Nudge[];
-  const typedStudyBlocks = (studyBlocks || []) as StudyBlock[];
+  const allStudyBlocks = (studyBlocks || []) as StudyBlock[];
   const typedGrades = (grades || []) as Grade[];
   const typedCourses = (courses || []) as Course[];
   const typedEmails = (emailSummaries || []) as EmailSummary[];
+  const typedTodayBlocks = (todayStudyBlocks || []) as StudyBlock[];
   const completedThisWeek = (completedAssignments || []).length;
 
-  // Calculate study hours this week
-  const studyHoursThisWeek = typedStudyBlocks
+  // Suppress unused variable warnings
+  void agentLogs;
+
+  // ====== DATA PROCESSING ======
+
+  // 1. Study hours — this week (Monday to now)
+  const now = new Date();
+  const dayOfWeek = now.getDay();
+  const mondayOffset = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+  const mondayStart = new Date(now);
+  mondayStart.setDate(now.getDate() - mondayOffset);
+  mondayStart.setHours(0, 0, 0, 0);
+
+  const thisWeekBlocks = allStudyBlocks.filter(
+    (sb) => new Date(sb.start_time) >= mondayStart && new Date(sb.start_time) <= now
+  );
+
+  const studyHoursThisWeek = thisWeekBlocks
     .filter((sb) => sb.status === "completed")
     .reduce((total, sb) => {
       const start = new Date(sb.start_time).getTime();
@@ -93,387 +140,436 @@ export default async function DashboardPage() {
       return total + (end - start) / (1000 * 60 * 60);
     }, 0);
 
-  // Calculate course grades
-  const courseGrades = typedCourses.map((course) => {
-    const courseGradeList = typedGrades.filter((g) => g.course_id === course.id);
-    if (courseGradeList.length === 0) return { course, average: null, letterGrade: "N/A" };
+  // Build per-day study data for the week chart
+  const dayNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const weekData = dayNames.map((dayShort, i) => {
+    const dayDate = new Date(mondayStart);
+    dayDate.setDate(mondayStart.getDate() + i);
+    const dayStr = dayDate.toISOString().split("T")[0];
 
-    let weightedSum = 0;
-    let totalWeight = 0;
-    for (const g of courseGradeList) {
-      if (g.score !== null && g.max_score !== null && g.max_score > 0) {
-        const pct = (g.score / g.max_score) * 100;
-        const w = g.weight || 1;
-        weightedSum += pct * w;
-        totalWeight += w;
-      }
-    }
-    const average = totalWeight > 0 ? weightedSum / totalWeight : null;
+    const dayBlocks = thisWeekBlocks.filter((sb) => {
+      const blockDate = new Date(sb.start_time).toISOString().split("T")[0];
+      return blockDate === dayStr && sb.status === "completed";
+    });
+
+    const hours = dayBlocks.reduce((total, sb) => {
+      const start = new Date(sb.start_time).getTime();
+      const end = new Date(sb.end_time).getTime();
+      return total + (end - start) / (1000 * 60 * 60);
+    }, 0);
+
     return {
-      course,
-      average,
-      letterGrade: average !== null ? getLetterGrade(average) : "N/A",
+      day: dayStr,
+      dayShort,
+      hours: Math.round(hours * 10) / 10,
+      blocks: dayBlocks.length,
+      isToday: dayDate.toISOString().split("T")[0] === now.toISOString().split("T")[0],
     };
   });
 
-  // Smart priority task: score by urgency * importance * ignored_count
-  const priorityTask = typedAssignments
-    .filter((a) => a.status !== "completed")
-    .sort((a, b) => {
-      const aHours = Math.max(
-        (new Date(a.due_date).getTime() - Date.now()) / 3600000,
-        0.1
-      );
-      const bHours = Math.max(
-        (new Date(b.due_date).getTime() - Date.now()) / 3600000,
-        0.1
-      );
-      const aScore = (1 / aHours) * (1 + (a.weight || 0)) * (1 + a.ignored_count * 0.5);
-      const bScore = (1 / bHours) * (1 + (b.weight || 0)) * (1 + b.ignored_count * 0.5);
-      return bScore - aScore;
-    })[0] || null;
+  const completedBlocks = thisWeekBlocks.filter((sb) => sb.status === "completed").length;
+  const skippedBlocks = thisWeekBlocks.filter((sb) => sb.status === "skipped").length;
 
-  // Generate quick insights
-  const insights = generateInsights(
+  // 2. Course grades + health data
+  const courseHealthData = typedCourses.map((course) => {
+    const courseGradeList = typedGrades.filter((g) => g.course_id === course.id);
+    const validGrades = courseGradeList.filter(
+      (g) => g.score !== null && g.max_score !== null && g.max_score > 0
+    );
+
+    let average: number | null = null;
+    if (validGrades.length > 0) {
+      let earned = 0;
+      let possible = 0;
+      for (const g of validGrades) {
+        earned += g.score!;
+        possible += g.max_score!;
+      }
+      average = (earned / possible) * 100;
+    }
+
+    // Determine trend from last 3 vs previous 3
+    let trend: "improving" | "declining" | "stable" | "new" = "new";
+    if (validGrades.length >= 4) {
+      const sorted = [...validGrades].sort(
+        (a, b) =>
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+      const recent = sorted.slice(0, 3);
+      const older = sorted.slice(-3);
+      const recentAvg =
+        recent.reduce((s, g) => s + g.score! / g.max_score!, 0) / recent.length;
+      const olderAvg =
+        older.reduce((s, g) => s + g.score! / g.max_score!, 0) / older.length;
+      if (recentAvg > olderAvg + 0.03) trend = "improving";
+      else if (recentAvg < olderAvg - 0.03) trend = "declining";
+      else trend = "stable";
+    } else if (validGrades.length > 0) {
+      trend = "stable";
+    }
+
+    // Risk level
+    let riskLevel: "on_track" | "warning" | "at_risk" | "critical" = "on_track";
+    const targetPct = profile?.gpa_target
+      ? gpaToPercent(profile.gpa_target)
+      : 80;
+    if (average !== null) {
+      if (average < 60) riskLevel = "critical";
+      else if (average < 70) riskLevel = "at_risk";
+      else if (average < targetPct) riskLevel = "warning";
+    }
+
+    return {
+      courseId: course.id,
+      courseName: course.name,
+      courseCode: course.code,
+      color: course.color,
+      average,
+      letterGrade: average !== null ? getLetterGrade(average) : "N/A",
+      gradeCount: validGrades.length,
+      recentGrades: validGrades.slice(-6).map((g) => ({
+        score: g.score!,
+        maxScore: g.max_score!,
+      })),
+      trend,
+      riskLevel,
+      canvasScore: null as number | null,
+    };
+  });
+
+  // 3. GPA chart data
+  const gradeHistory = typedGrades
+    .filter((g) => g.score !== null && g.max_score !== null && g.max_score > 0)
+    .map((g) => ({
+      date: g.created_at,
+      label: g.title,
+      percentage: Math.round((g.score! / g.max_score!) * 1000) / 10,
+      course: g.course?.name || "Unknown",
+      courseColor: g.course?.color || "#6366f1",
+    }));
+
+  // 4. Deadline pipeline
+  const deadlinePipeline = typedAssignments.slice(0, 8).map((a) => {
+    const hoursLeft =
+      (new Date(a.due_date).getTime() - Date.now()) / (1000 * 60 * 60);
+    const isOverdue = a.status === "overdue" || hoursLeft < 0;
+
+    let status: "overdue" | "urgent" | "soon" | "upcoming" | "later";
+    if (isOverdue) status = "overdue";
+    else if (hoursLeft <= 24) status = "urgent";
+    else if (hoursLeft <= 72) status = "soon";
+    else if (hoursLeft <= 168) status = "upcoming";
+    else status = "later";
+
+    return {
+      id: a.id,
+      title: a.title,
+      courseName: a.course ? (a.course as Course).name : "General",
+      courseColor: a.course ? (a.course as Course).color : "#6366f1",
+      dueDate: a.due_date,
+      hoursLeft,
+      status,
+      weight: a.weight,
+      isOverdue,
+    };
+  });
+
+  // 5. Today's plan — combine study blocks + deadlines due today
+  const todayStr = now.toISOString().split("T")[0];
+  const todayPlanItems = buildTodaysPlan(
+    typedTodayBlocks,
     typedAssignments,
-    typedGrades,
-    courseGrades,
-    studyHoursThisWeek,
-    completedThisWeek,
-    typedEmails
+    todayStr,
+    courseHealthData
   );
 
-  // Separate pending vs overdue for display
-  const overdueCount = typedAssignments.filter((a) => a.status === "overdue").length;
-  const pendingAssignments = typedAssignments.filter((a) => a.status !== "overdue");
+  // 6. Priority task — grade-risk-aware
+  const priorityTask = computePriorityTask(typedAssignments, courseHealthData);
+
+  // 7. Activity feed
+  const feedItems = buildActivityFeed(typedNudges, typedEmails);
+
+  // 8. Smart greeting + insight
+  const firstName = profile?.full_name?.split(" ")[0] || "there";
+  const greeting = buildGreeting(
+    firstName,
+    typedAssignments,
+    courseHealthData,
+    studyHoursThisWeek,
+    completedThisWeek
+  );
+  const topInsight = buildTopInsight(
+    typedAssignments,
+    courseHealthData,
+    studyHoursThisWeek
+  );
+
+  // 9. Overall stats
+  const overdueCount = typedAssignments.filter(
+    (a) => a.status === "overdue"
+  ).length;
+  const coursesAtRisk = courseHealthData.filter(
+    (c) => c.riskLevel === "at_risk" || c.riskLevel === "critical"
+  ).length;
+  const overallGpa = computeOverallGpa(courseHealthData);
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+    <div className="space-y-6 pb-8">
+      {/* ====== HEADER ====== */}
+      <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-bold">
-            Hey, {profile?.full_name?.split(" ")[0] || "there"} 👋
+          <h1 className="text-2xl font-bold tracking-tight">
+            Dashboard
           </h1>
-          <p className="text-muted-foreground">
-            Here&apos;s what&apos;s going on in your life right now.
+          <p className="text-sm text-muted-foreground">
+            {now.toLocaleDateString("en-US", {
+              weekday: "long",
+              month: "long",
+              day: "numeric",
+            })}
           </p>
         </div>
-        {profile?.streak_count > 0 && (
-          <div className="flex items-center gap-2 rounded-full bg-orange-500/10 px-4 py-2 text-orange-400">
-            <Flame className="h-5 w-5" />
-            <span className="text-sm font-bold">{profile.streak_count} day streak</span>
-          </div>
-        )}
+        <div className="flex items-center gap-3">
+          {profile?.streak_count > 0 && (
+            <div className="flex items-center gap-1.5 rounded-full bg-orange-500/10 px-3 py-1.5 text-orange-400">
+              <Flame className="h-4 w-4" />
+              <span className="text-sm font-bold">{profile.streak_count}d</span>
+            </div>
+          )}
+          {overallGpa !== null && (
+            <div className="flex items-center gap-1.5 rounded-full bg-purple-500/10 px-3 py-1.5 text-purple-400">
+              <GraduationCap className="h-4 w-4" />
+              <span className="text-sm font-bold">{overallGpa}</span>
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Priority Task */}
-      {priorityTask && (
-        <Card className="border-purple-500/30 bg-purple-500/5">
-          <CardContent className="flex items-center gap-4 p-6">
-            <Target className="h-8 w-8 text-purple-400" />
+      {/* ====== HERO: PRIORITY + QUICK STATS ====== */}
+      <div className="grid gap-4 lg:grid-cols-3">
+        {/* Priority Task — big hero card */}
+        {priorityTask ? (
+          <Card className="relative overflow-hidden border-purple-500/20 bg-gradient-to-br from-purple-500/10 via-transparent to-indigo-500/5 lg:col-span-2">
+            <div className="absolute right-0 top-0 h-32 w-32 bg-purple-500/5 blur-3xl" />
+            <CardContent className="relative flex items-center gap-5 p-6">
+              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-purple-500/15">
+                <Target className="h-7 w-7 text-purple-400" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-purple-400/80">
+                  Focus right now
+                </p>
+                <p className="mt-1 truncate text-lg font-bold">
+                  {priorityTask.title}
+                </p>
+                <p className="mt-0.5 text-sm text-muted-foreground">
+                  {priorityTask.reason}
+                </p>
+              </div>
+              <a
+                href="/chat"
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-purple-500/15 text-purple-400 transition-colors hover:bg-purple-500/25"
+              >
+                <ArrowRight className="h-5 w-5" />
+              </a>
+            </CardContent>
+          </Card>
+        ) : (
+          <Card className="border-emerald-500/20 bg-emerald-500/5 lg:col-span-2">
+            <CardContent className="flex items-center gap-4 p-6">
+              <CheckCircle2 className="h-8 w-8 text-emerald-400" />
+              <div>
+                <p className="text-sm font-medium text-emerald-400">
+                  All caught up!
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  No urgent tasks. Great job staying on top of things.
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Quick Stats Column */}
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-1 lg:gap-3">
+          <div className="flex items-center gap-3 rounded-xl border border-border/40 p-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-orange-500/10">
+              <Clock className="h-4 w-4 text-orange-400" />
+            </div>
             <div>
-              <p className="text-xs font-medium uppercase tracking-wider text-purple-400">
-                Your Most Important Thing Right Now
-              </p>
-              <p className="text-lg font-semibold">{priorityTask.title}</p>
-              <p className="text-sm text-muted-foreground">
-                {priorityTask.status === "overdue" ? (
-                  <span className="text-red-400">OVERDUE</span>
-                ) : (
-                  <>Due {formatRelativeDate(priorityTask.due_date)}</>
-                )}
-                {priorityTask.course && (
-                  <span className="ml-2 text-purple-400">
-                    • {(priorityTask.course as Course).name}
+              <div className="text-lg font-bold leading-none">
+                {typedAssignments.length}
+              </div>
+              <div className="mt-0.5 text-[11px] text-muted-foreground">
+                deadlines
+                {overdueCount > 0 && (
+                  <span className="ml-1 text-red-400">
+                    ({overdueCount} overdue)
                   </span>
                 )}
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Agent Insights */}
-      {insights.length > 0 && (
-        <Card className="border-blue-500/20 bg-blue-500/5">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-sm font-medium">
-              <Brain className="h-4 w-4 text-blue-400" />
-              <span className="text-blue-400">Agent Insights</span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {insights.map((insight, i) => (
-              <div key={i} className="flex items-start gap-2">
-                {insight.type === "warning" ? (
-                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-orange-400" />
-                ) : (
-                  <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-green-400" />
-                )}
-                <p className="text-sm text-muted-foreground">{insight.message}</p>
               </div>
-            ))}
-          </CardContent>
-        </Card>
-      )}
+            </div>
+          </div>
 
-      {/* Stats Grid */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {/* Upcoming Deadlines */}
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Upcoming Deadlines
-            </CardTitle>
-            <Clock className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{pendingAssignments.length}</div>
-            <p className="text-xs text-muted-foreground">
-              {pendingAssignments.filter((a) => {
-                const h = (new Date(a.due_date).getTime() - Date.now()) / 3600000;
-                return h <= 72 && h > 0;
-              }).length}{" "}
-              due within 3 days
-              {overdueCount > 0 && (
-                <span className="ml-1 text-red-400">
-                  • {overdueCount} overdue
+          <div className="flex items-center gap-3 rounded-xl border border-border/40 p-3">
+            <div
+              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
+                coursesAtRisk > 0 ? "bg-red-500/10" : "bg-emerald-500/10"
+              }`}
+            >
+              {coursesAtRisk > 0 ? (
+                <AlertTriangle className="h-4 w-4 text-red-400" />
+              ) : (
+                <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+              )}
+            </div>
+            <div>
+              <div className="text-lg font-bold leading-none">
+                {coursesAtRisk > 0 ? coursesAtRisk : typedCourses.length}
+              </div>
+              <div className="mt-0.5 text-[11px] text-muted-foreground">
+                {coursesAtRisk > 0 ? "courses at risk" : "courses on track"}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ====== TODAY'S PLAN ====== */}
+      <Card className="border-border/30">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <div className="flex h-6 w-6 items-center justify-center rounded-md bg-gradient-to-br from-purple-500/20 to-blue-500/20">
+              <Sparkles className="h-3.5 w-3.5 text-purple-400" />
+            </div>
+            Today&apos;s Plan
+            <Badge variant="secondary" className="ml-auto text-[10px]">
+              AI-Powered
+            </Badge>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <TodaysPlan
+            planItems={todayPlanItems}
+            greeting={greeting}
+            topInsight={topInsight}
+          />
+        </CardContent>
+      </Card>
+
+      {/* ====== MAIN GRID: GRADES + STUDY ====== */}
+      <div className="grid gap-6 lg:grid-cols-2">
+        {/* Grade Performance */}
+        <Card className="border-border/30">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <div className="flex h-6 w-6 items-center justify-center rounded-md bg-purple-500/15">
+                <TrendingUp className="h-3.5 w-3.5 text-purple-400" />
+              </div>
+              Grade Trajectory
+              {profile?.gpa_target && (
+                <span className="ml-auto text-xs font-normal text-muted-foreground">
+                  Target: {profile.gpa_target} GPA
                 </span>
               )}
-            </p>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <GpaChart
+              gradeHistory={gradeHistory}
+              gpaTarget={profile?.gpa_target || null}
+            />
           </CardContent>
         </Card>
 
-        {/* Study Hours */}
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Study Hours This Week
+        {/* Study Analytics */}
+        <Card className="border-border/30">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <div className="flex h-6 w-6 items-center justify-center rounded-md bg-blue-500/15">
+                <BarChart3 className="h-3.5 w-3.5 text-blue-400" />
+              </div>
+              Study Analytics
+              <span className="ml-auto text-xs font-normal text-muted-foreground">
+                this week
+              </span>
             </CardTitle>
-            <BookOpen className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">
-              {studyHoursThisWeek.toFixed(1)}h
-            </div>
-            <Progress value={Math.min((studyHoursThisWeek / 20) * 100, 100)} className="mt-2" />
-            <p className="mt-1 text-xs text-muted-foreground">
-              of 20h weekly target
-            </p>
-          </CardContent>
-        </Card>
-
-        {/* Active Nudges */}
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Active Nudges
-            </CardTitle>
-            <Bell className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {typedNudges.filter((n) => n.status === "pending" || n.status === "sent").length}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {typedNudges.filter((n) => n.severity === "urgent" || n.severity === "nuclear").length}{" "}
-              urgent
-            </p>
-          </CardContent>
-        </Card>
-
-        {/* Courses */}
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Courses
-            </CardTitle>
-            <GraduationCap className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{typedCourses.length}</div>
-            <p className="text-xs text-muted-foreground">
-              {courseGrades.filter((c) => c.average !== null && c.average >= 80).length} on track
-            </p>
+            <StudyAnalytics
+              weekData={weekData}
+              totalHours={studyHoursThisWeek}
+              completedBlocks={completedBlocks}
+              skippedBlocks={skippedBlocks}
+              weeklyTarget={20}
+            />
           </CardContent>
         </Card>
       </div>
 
-      {/* Two-column layout */}
+      {/* ====== COURSE HEALTH GRID ====== */}
+      <Card className="border-border/30">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <div className="flex h-6 w-6 items-center justify-center rounded-md bg-indigo-500/15">
+              <GraduationCap className="h-3.5 w-3.5 text-indigo-400" />
+            </div>
+            Course Health
+            <span className="ml-auto text-xs font-normal text-muted-foreground">
+              {courseHealthData.filter((c) => c.average !== null).length} of{" "}
+              {courseHealthData.length} with grades
+            </span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <CourseHealthGrid
+            courses={courseHealthData}
+            gpaTarget={profile?.gpa_target || null}
+          />
+        </CardContent>
+      </Card>
+
+      {/* ====== BOTTOM: DEADLINES + ACTIVITY FEED ====== */}
       <div className="grid gap-6 lg:grid-cols-2">
-        {/* Upcoming Deadlines List */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <Clock className="h-5 w-5 text-purple-400" />
-              Upcoming Deadlines
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {typedAssignments.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No upcoming deadlines. Enjoy the peace!
-              </p>
-            ) : (
-              typedAssignments.slice(0, 5).map((a) => {
-                const hoursLeft =
-                  (new Date(a.due_date).getTime() - Date.now()) / 3600000;
-                const isOverdue = a.status === "overdue";
-                return (
-                  <div
-                    key={a.id}
-                    className={`flex items-center justify-between rounded-lg border p-3 ${
-                      isOverdue
-                        ? "border-red-500/30 bg-red-500/5"
-                        : "border-border/50"
-                    }`}
-                  >
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium">{a.title}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {a.course && (a.course as Course).name} •{" "}
-                        {formatRelativeDate(a.due_date)}
-                      </p>
-                    </div>
-                    <Badge
-                      variant={isOverdue || hoursLeft <= 24 ? "destructive" : "secondary"}
-                      className="ml-2 shrink-0"
-                    >
-                      {isOverdue
-                        ? "OVERDUE"
-                        : hoursLeft <= 0
-                          ? "OVERDUE"
-                          : hoursLeft <= 24
-                            ? `${Math.round(hoursLeft)}h`
-                            : `${Math.round(hoursLeft / 24)}d`}
-                    </Badge>
-                  </div>
-                );
-              })
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Recent Nudges & Emails */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-lg">
-              {typedNudges.length > 0 ? (
-                <Bell className="h-5 w-5 text-purple-400" />
-              ) : (
-                <Mail className="h-5 w-5 text-purple-400" />
-              )}
-              {typedNudges.length > 0 ? "Recent Nudges" : "Latest Emails"}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {typedNudges.length > 0 ? (
-              typedNudges.slice(0, 5).map((n) => (
-                <div
-                  key={n.id}
-                  className={`rounded-lg border p-3 ${getEscalationBgColor(n.severity)}`}
-                >
-                  <div className="flex items-center gap-2">
-                    <Badge variant="outline" className="text-xs capitalize">
-                      {n.severity}
-                    </Badge>
-                    <span className="text-xs text-muted-foreground">
-                      {new Date(n.created_at).toLocaleDateString()}
-                    </span>
-                  </div>
-                  <p className="mt-1 text-sm">{n.message}</p>
-                </div>
-              ))
-            ) : typedEmails.length > 0 ? (
-              typedEmails.slice(0, 5).map((e) => (
-                <div
-                  key={e.id}
-                  className="rounded-lg border border-border/50 p-3"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="truncate text-sm font-medium">{e.subject}</p>
-                    <Badge
-                      variant="outline"
-                      className={`shrink-0 text-xs capitalize ${
-                        e.category === "professor"
-                          ? "border-blue-500/30 text-blue-400"
-                          : e.category === "financial_aid"
-                            ? "border-green-500/30 text-green-400"
-                            : e.category === "campus_admin"
-                              ? "border-yellow-500/30 text-yellow-400"
-                              : "text-muted-foreground"
-                      }`}
-                    >
-                      {e.category.replace("_", " ")}
-                    </Badge>
-                  </div>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    From: {e.from}
-                  </p>
-                  <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
-                    {e.summary}
-                  </p>
-                  {e.action_required && (
-                    <p className="mt-1 text-xs font-medium text-orange-400">
-                      Action needed{e.suggested_action ? `: ${e.suggested_action}` : ""}
-                    </p>
-                  )}
-                </div>
-              ))
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                No nudges or emails yet. Sync your emails from Settings to get started.
-              </p>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Grade Overview */}
-        <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <GraduationCap className="h-5 w-5 text-purple-400" />
-              Grade Overview
+        {/* Deadline Pipeline */}
+        <Card className="border-border/30">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <div className="flex h-6 w-6 items-center justify-center rounded-md bg-orange-500/15">
+                <CalendarDays className="h-3.5 w-3.5 text-orange-400" />
+              </div>
+              Deadline Pipeline
+              <Badge
+                variant={overdueCount > 0 ? "destructive" : "secondary"}
+                className="ml-auto text-[10px]"
+              >
+                {typedAssignments.length} active
+              </Badge>
             </CardTitle>
           </CardHeader>
           <CardContent>
-            {courseGrades.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                Add courses to start tracking your grades.
-              </p>
-            ) : (
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {courseGrades.map(({ course, average, letterGrade }) => (
-                  <div
-                    key={course.id}
-                    className="rounded-lg border border-border/50 p-4"
-                  >
-                    <div className="flex items-center gap-2">
-                      <div
-                        className="h-3 w-3 rounded-full"
-                        style={{ backgroundColor: course.color }}
-                      />
-                      <span className="text-sm font-medium">{course.name}</span>
-                    </div>
-                    <div className="mt-2 flex items-baseline gap-2">
-                      <span className="text-2xl font-bold">{letterGrade}</span>
-                      {average !== null && (
-                        <span className="text-sm text-muted-foreground">
-                          {average.toFixed(1)}%
-                        </span>
-                      )}
-                    </div>
-                    {average !== null && (
-                      <Progress
-                        value={average}
-                        className="mt-2"
-                      />
-                    )}
-                  </div>
-                ))}
+            <DeadlinePipeline deadlines={deadlinePipeline} />
+          </CardContent>
+        </Card>
+
+        {/* Activity Feed */}
+        <Card className="border-border/30">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <div className="flex h-6 w-6 items-center justify-center rounded-md bg-emerald-500/15">
+                <Brain className="h-3.5 w-3.5 text-emerald-400" />
               </div>
-            )}
+              Agent Activity
+              <a
+                href="/chat"
+                className="ml-auto flex items-center gap-1 text-xs font-normal text-purple-400 hover:text-purple-300"
+              >
+                Chat <ArrowRight className="h-3 w-3" />
+              </a>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ActivityFeed items={feedItems} />
           </CardContent>
         </Card>
       </div>
@@ -481,94 +577,288 @@ export default async function DashboardPage() {
   );
 }
 
-// Generate deterministic insights from available data
-function generateInsights(
+// ====== HELPER FUNCTIONS ======
+
+function buildTodaysPlan(
+  todayBlocks: StudyBlock[],
   assignments: Assignment[],
-  grades: Grade[],
-  courseGrades: { course: Course; average: number | null; letterGrade: string }[],
-  studyHours: number,
-  completedThisWeek: number,
-  emails: EmailSummary[]
-): { message: string; type: "info" | "warning" }[] {
-  const insights: { message: string; type: "info" | "warning" }[] = [];
+  todayStr: string,
+  courseHealth: Array<{
+    courseId: string;
+    courseName: string;
+    color: string;
+    riskLevel: string;
+    average: number | null;
+  }>
+) {
+  const items: Array<{
+    id: string;
+    type: "study" | "deadline" | "event" | "break" | "review";
+    title: string;
+    courseName?: string;
+    courseColor?: string;
+    startTime: string;
+    endTime?: string;
+    reason: string;
+    priority: "high" | "medium" | "low";
+    isCompleted?: boolean;
+  }> = [];
 
-  // Overdue assignments warning
-  const overdueCount = assignments.filter((a) => a.status === "overdue").length;
-  if (overdueCount > 0) {
-    insights.push({
-      message: `You have ${overdueCount} overdue assignment${overdueCount > 1 ? "s" : ""}. Check if you can still submit late — talk to your professor.`,
-      type: "warning",
+  // Add study blocks
+  for (const sb of todayBlocks) {
+    const courseInfo = courseHealth.find((c) => c.courseId === sb.course_id);
+    const isAtRisk =
+      courseInfo?.riskLevel === "at_risk" || courseInfo?.riskLevel === "critical";
+
+    items.push({
+      id: sb.id,
+      type: sb.google_event_id ? "event" : "study",
+      title: sb.title,
+      courseName: courseInfo?.courseName || sb.course?.name,
+      courseColor: courseInfo?.color || sb.course?.color,
+      startTime: sb.start_time,
+      endTime: sb.end_time,
+      reason: isAtRisk
+        ? `${courseInfo?.courseName} needs attention — grade is at ${courseInfo?.average?.toFixed(1) ?? "?"}%`
+        : "Scheduled study session to stay on track",
+      priority: isAtRisk ? "high" : "medium",
+      isCompleted: sb.status === "completed",
     });
   }
 
-  // Assignments due within 24 hours
-  const urgentCount = assignments.filter((a) => {
-    const h = (new Date(a.due_date).getTime() - Date.now()) / 3600000;
-    return h > 0 && h <= 24 && a.status !== "completed";
-  }).length;
-  if (urgentCount > 0) {
-    insights.push({
-      message: `${urgentCount} assignment${urgentCount > 1 ? "s" : ""} due in the next 24 hours. Focus time!`,
-      type: "warning",
-    });
-  }
-
-  // Dropping grades
-  const droppingCourses = courseGrades.filter(
-    (c) => c.average !== null && c.average < 70
+  // Add deadlines due today
+  const todayDeadlines = assignments.filter(
+    (a) => a.due_date.startsWith(todayStr) && a.status !== "completed"
   );
-  if (droppingCourses.length > 0) {
-    insights.push({
-      message: `Your grade in ${droppingCourses.map((c) => c.course.name).join(", ")} is below C. Consider scheduling extra study time.`,
-      type: "warning",
+  for (const a of todayDeadlines) {
+    const courseInfo = courseHealth.find((c) => c.courseId === a.course_id);
+    items.push({
+      id: `deadline-${a.id}`,
+      type: "deadline",
+      title: a.title,
+      courseName: a.course ? (a.course as Course).name : undefined,
+      courseColor: courseInfo?.color || a.course?.color,
+      startTime: a.due_date,
+      reason: a.weight
+        ? `Worth ${a.weight} points — don't miss this deadline`
+        : "Due today — make sure this is submitted",
+      priority: "high",
     });
   }
 
-  // Study hours tracking
-  if (studyHours >= 15) {
-    insights.push({
-      message: `Great work! You've studied ${studyHours.toFixed(1)} hours this week.`,
-      type: "info",
-    });
-  } else if (studyHours < 5 && assignments.length > 3) {
-    insights.push({
-      message: `Only ${studyHours.toFixed(1)} study hours logged this week with ${assignments.length} pending assignments. Time to ramp up.`,
-      type: "warning",
-    });
-  }
+  // Sort by time
+  items.sort(
+    (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime()
+  );
 
-  // Completed assignments this week
-  if (completedThisWeek > 0) {
-    insights.push({
-      message: `You completed ${completedThisWeek} assignment${completedThisWeek > 1 ? "s" : ""} this week. Keep it up!`,
-      type: "info",
-    });
-  }
-
-  // Action-required emails
-  const actionEmails = emails.filter((e) => e.action_required);
-  if (actionEmails.length > 0) {
-    insights.push({
-      message: `${actionEmails.length} email${actionEmails.length > 1 ? "s" : ""} need${actionEmails.length === 1 ? "s" : ""} your attention${actionEmails[0].suggested_action ? `: "${actionEmails[0].suggested_action}"` : ""}.`,
-      type: "warning",
-    });
-  }
-
-  return insights.slice(0, 4); // Max 4 insights
+  return items;
 }
 
-function formatRelativeDate(dateStr: string): string {
-  const date = new Date(dateStr);
-  const now = new Date();
-  const diffMs = date.getTime() - now.getTime();
-  const diffHours = diffMs / (1000 * 60 * 60);
+function computePriorityTask(
+  assignments: Assignment[],
+  courseHealth: Array<{
+    courseId: string;
+    courseName: string;
+    riskLevel: string;
+    average: number | null;
+  }>
+) {
+  const pending = assignments
+    .filter((a) => a.status !== "completed")
+    .sort((a, b) => {
+      const aDate = new Date(a.due_date).getTime();
+      const bDate = new Date(b.due_date).getTime();
+      const aWeight = a.weight || 0;
+      const bWeight = b.weight || 0;
 
-  if (diffHours < 0) return "overdue";
-  if (diffHours < 1) return "in less than an hour";
-  if (diffHours < 24) return `in ${Math.round(diffHours)} hours`;
-  if (diffHours < 48) return "tomorrow";
-  if (diffHours < 168) return `in ${Math.round(diffHours / 24)} days`;
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+      const aRisk = courseHealth.find((c) => c.courseId === a.course_id);
+      const bRisk = courseHealth.find((c) => c.courseId === b.course_id);
+      const aRiskBoost =
+        aRisk?.riskLevel === "critical"
+          ? 3
+          : aRisk?.riskLevel === "at_risk"
+            ? 2
+            : aRisk?.riskLevel === "warning"
+              ? 1.5
+              : 1;
+      const bRiskBoost =
+        bRisk?.riskLevel === "critical"
+          ? 3
+          : bRisk?.riskLevel === "at_risk"
+            ? 2
+            : bRisk?.riskLevel === "warning"
+              ? 1.5
+              : 1;
+
+      const aScore =
+        (1 / Math.max(aDate - Date.now(), 1)) *
+        (1 + aWeight) *
+        aRiskBoost *
+        (1 + a.ignored_count * 0.5);
+      const bScore =
+        (1 / Math.max(bDate - Date.now(), 1)) *
+        (1 + bWeight) *
+        bRiskBoost *
+        (1 + b.ignored_count * 0.5);
+      return bScore - aScore;
+    });
+
+  if (pending.length === 0) return null;
+
+  const top = pending[0];
+  const hoursLeft = Math.round(
+    (new Date(top.due_date).getTime() - Date.now()) / (1000 * 60 * 60)
+  );
+  const courseInfo = courseHealth.find((c) => c.courseId === top.course_id);
+  const riskNote =
+    courseInfo && (courseInfo.riskLevel === "at_risk" || courseInfo.riskLevel === "critical")
+      ? ` — ${courseInfo.courseName} at ${courseInfo.average?.toFixed(1)}%`
+      : "";
+
+  const courseName = top.course ? (top.course as Course).name : "";
+
+  return {
+    title: top.title,
+    reason:
+      top.status === "overdue"
+        ? `OVERDUE${riskNote}${courseName ? ` • ${courseName}` : ""}`
+        : hoursLeft <= 0
+          ? `OVERDUE${riskNote}`
+          : `Due in ${hoursLeft < 24 ? `${hoursLeft} hours` : `${Math.round(hoursLeft / 24)} days`}${
+              top.weight ? ` • ${top.weight} pts` : ""
+            }${riskNote}${courseName ? ` • ${courseName}` : ""}`,
+  };
+}
+
+function buildActivityFeed(nudges: Nudge[], emails: EmailSummary[]) {
+  const items: Array<{
+    id: string;
+    type: "nudge" | "insight" | "email" | "achievement";
+    title: string;
+    message: string;
+    severity?: "gentle" | "firm" | "urgent" | "nuclear";
+    category?: string;
+    timestamp: string;
+    actionUrl?: string;
+  }> = [];
+
+  for (const n of nudges.slice(0, 4)) {
+    items.push({
+      id: n.id,
+      type: "nudge",
+      title:
+        n.severity === "nuclear"
+          ? "Critical Alert"
+          : n.severity === "urgent"
+            ? "Urgent Nudge"
+            : "Reminder",
+      message: n.message,
+      severity: n.severity,
+      timestamp: n.created_at,
+    });
+  }
+
+  for (const e of emails.filter((e) => e.action_required).slice(0, 3)) {
+    items.push({
+      id: e.id,
+      type: "email",
+      title: e.subject,
+      message: e.summary,
+      category: e.category,
+      timestamp: e.received_at,
+    });
+  }
+
+  // Sort by time, newest first
+  items.sort(
+    (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+  );
+
+  return items.slice(0, 6);
+}
+
+function buildGreeting(
+  firstName: string,
+  assignments: Assignment[],
+  courseHealth: Array<{ riskLevel: string }>,
+  studyHours: number,
+  completedThisWeek: number
+): string {
+  const now = new Date();
+  const hour = now.getHours();
+  const timeGreeting =
+    hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+
+  const overdueCount = assignments.filter((a) => a.status === "overdue").length;
+  const atRiskCount = courseHealth.filter(
+    (c) => c.riskLevel === "at_risk" || c.riskLevel === "critical"
+  ).length;
+
+  if (overdueCount > 0 && atRiskCount > 0) {
+    return `${timeGreeting}, ${firstName}. You have ${overdueCount} overdue assignment${overdueCount > 1 ? "s" : ""} and ${atRiskCount} course${atRiskCount > 1 ? "s" : ""} that need attention. Let's get you back on track.`;
+  }
+  if (overdueCount > 0) {
+    return `${timeGreeting}, ${firstName}. You have ${overdueCount} overdue item${overdueCount > 1 ? "s" : ""} — let's tackle ${overdueCount === 1 ? "it" : "them"} first.`;
+  }
+  if (completedThisWeek >= 3) {
+    return `${timeGreeting}, ${firstName}! You've crushed ${completedThisWeek} assignments this week. Keep that momentum going.`;
+  }
+  if (studyHours >= 10) {
+    return `${timeGreeting}, ${firstName}. ${studyHours.toFixed(1)} study hours logged this week — solid work.`;
+  }
+  return `${timeGreeting}, ${firstName}. Here's your personalized plan for today.`;
+}
+
+function buildTopInsight(
+  assignments: Assignment[],
+  courseHealth: Array<{ courseName: string; riskLevel: string; average: number | null }>,
+  studyHours: number
+): string | null {
+  const critical = courseHealth.find((c) => c.riskLevel === "critical");
+  if (critical) {
+    return `${critical.courseName} is at ${critical.average?.toFixed(1)}% — focus your study time here to bring it back up.`;
+  }
+
+  const urgentDeadlines = assignments.filter((a) => {
+    const h = (new Date(a.due_date).getTime() - Date.now()) / 3600000;
+    return h > 0 && h <= 24 && a.status !== "completed";
+  });
+  if (urgentDeadlines.length > 0) {
+    return `${urgentDeadlines.length} deadline${urgentDeadlines.length > 1 ? "s" : ""} in the next 24 hours. Prioritize ${urgentDeadlines[0].title}.`;
+  }
+
+  const atRisk = courseHealth.filter((c) => c.riskLevel === "at_risk");
+  if (atRisk.length > 0) {
+    return `${atRisk.map((c) => c.courseName).join(" and ")} ${atRisk.length > 1 ? "are" : "is"} at risk — schedule extra study sessions.`;
+  }
+
+  if (studyHours < 5 && assignments.length > 3) {
+    return `Only ${studyHours.toFixed(1)} study hours this week with ${assignments.length} pending assignments. Time to ramp up.`;
+  }
+
+  return null;
+}
+
+function computeOverallGpa(
+  courseHealth: Array<{ average: number | null; letterGrade: string }>
+): string | null {
+  const withGrades = courseHealth.filter((c) => c.average !== null);
+  if (withGrades.length === 0) return null;
+
+  const totalPct =
+    withGrades.reduce((sum, c) => sum + c.average!, 0) / withGrades.length;
+
+  if (totalPct >= 93) return "4.0";
+  if (totalPct >= 90) return "3.7";
+  if (totalPct >= 87) return "3.3";
+  if (totalPct >= 83) return "3.0";
+  if (totalPct >= 80) return "2.7";
+  if (totalPct >= 77) return "2.3";
+  if (totalPct >= 73) return "2.0";
+  if (totalPct >= 70) return "1.7";
+  if (totalPct >= 67) return "1.3";
+  if (totalPct >= 60) return "1.0";
+  return "0.0";
 }
 
 function getLetterGrade(pct: number): string {
@@ -583,4 +873,15 @@ function getLetterGrade(pct: number): string {
   if (pct >= 67) return "D+";
   if (pct >= 60) return "D";
   return "F";
+}
+
+function gpaToPercent(gpa: number): number {
+  if (gpa >= 4.0) return 93;
+  if (gpa >= 3.7) return 90;
+  if (gpa >= 3.3) return 87;
+  if (gpa >= 3.0) return 83;
+  if (gpa >= 2.7) return 80;
+  if (gpa >= 2.3) return 77;
+  if (gpa >= 2.0) return 73;
+  return 70;
 }

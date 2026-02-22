@@ -29,7 +29,7 @@ export const agentTools: ChatCompletionTool[] = [
     function: {
       name: "get_grades",
       description:
-        "Get current grades for the student. Can filter by course. Returns individual grades and calculated course averages.",
+        "Get all grades for the student. Returns individual grade rows AND per-course averages with letter grades. Use this for a quick overview of how the student is doing across all courses.",
       parameters: {
         type: "object",
         properties: {
@@ -107,12 +107,20 @@ export const agentTools: ChatCompletionTool[] = [
     function: {
       name: "update_study_block",
       description:
-        "Update an existing study block — change title, time, status, or course. Can also reschedule it.",
+        "Update an existing study block — change title, time, status, or course. Pass study_block_id if you have it. If unknown, pass title + date to look it up first.",
       parameters: {
         type: "object",
         properties: {
-          study_block_id: { type: "string", description: "Study block ID" },
-          title: { type: "string", description: "New title" },
+          study_block_id: {
+            type: "string",
+            description: "UUID of the study block (preferred). If unknown, use title + date instead.",
+          },
+          title: { type: "string", description: "Current title for lookup OR new title" },
+          date: {
+            type: "string",
+            description: "Date of the study block (YYYY-MM-DD), used with title for lookup when ID is unknown.",
+          },
+          new_title: { type: "string", description: "New title to set (only when using title+date for lookup)" },
           start_time: { type: "string", description: "New start time (ISO 8601)" },
           end_time: { type: "string", description: "New end time (ISO 8601)" },
           status: {
@@ -121,7 +129,6 @@ export const agentTools: ChatCompletionTool[] = [
             description: "New status",
           },
         },
-        required: ["study_block_id"],
       },
     },
   },
@@ -130,13 +137,23 @@ export const agentTools: ChatCompletionTool[] = [
     function: {
       name: "delete_study_block",
       description:
-        "Delete a study block. Also removes it from Google Calendar if it was synced.",
+        "Delete a study block. Also removes it from Google Calendar if synced. Pass study_block_id if you have it. If you only know the title, pass title + date instead and the system will look it up.",
       parameters: {
         type: "object",
         properties: {
-          study_block_id: { type: "string", description: "Study block ID" },
+          study_block_id: {
+            type: "string",
+            description: "UUID of the study block (preferred). If unknown, use title + date instead.",
+          },
+          title: {
+            type: "string",
+            description: "Title of the study block, used for lookup when study_block_id is unknown.",
+          },
+          date: {
+            type: "string",
+            description: "Date of the study block (YYYY-MM-DD), used with title for lookup.",
+          },
         },
-        required: ["study_block_id"],
       },
     },
   },
@@ -155,6 +172,25 @@ export const agentTools: ChatCompletionTool[] = [
           end_time: { type: "string", description: "End time (ISO 8601)" },
         },
         required: ["title", "start_time", "end_time"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_google_calendar_event",
+      description:
+        "Update/edit an existing Google Calendar event — change title, description, start time, or end time. Use get_calendar_events first to get the event ID.",
+      parameters: {
+        type: "object",
+        properties: {
+          event_id: { type: "string", description: "Google Calendar event ID" },
+          title: { type: "string", description: "New event title" },
+          description: { type: "string", description: "New event description" },
+          start_time: { type: "string", description: "New start time (ISO 8601)" },
+          end_time: { type: "string", description: "New end time (ISO 8601)" },
+        },
+        required: ["event_id"],
       },
     },
   },
@@ -216,18 +252,18 @@ export const agentTools: ChatCompletionTool[] = [
     function: {
       name: "calculate_grade_needed",
       description:
-        "Calculate what score the student needs on a remaining assignment/exam to achieve a target grade in a course.",
+        "Calculate what score the student needs on remaining work to achieve a target grade. Uses Canvas enrollment score (most accurate) when available, falls back to manual calculation. Returns current average, letter grade, and exact score needed.",
       parameters: {
         type: "object",
         properties: {
           course_id: { type: "string", description: "Course ID" },
           target_grade: {
             type: "number",
-            description: "Target grade percentage (e.g., 80 for B-)",
+            description: "Target grade as percentage (e.g., 90 for A, 80 for B-)",
           },
           remaining_assignment_weight: {
             type: "number",
-            description: "Weight of the remaining assignment as percentage",
+            description: "What percentage of the total grade the remaining work is worth (e.g., 30 for a final worth 30%)",
           },
         },
         required: ["course_id", "target_grade"],
@@ -295,7 +331,7 @@ export const agentTools: ChatCompletionTool[] = [
     function: {
       name: "sync_canvas",
       description:
-        "Re-sync assignments, submissions, and grades from Canvas LMS. Updates assignment statuses based on what the student has actually submitted. Use this when the student asks to refresh their Canvas data or when assignment statuses might be stale.",
+        "Full re-sync from Canvas LMS — imports assignments, grades, submission scores, and Canvas enrollment grades. Returns per-course Canvas scores (the most accurate grades). Use when data might be stale or after the student submits work.",
       parameters: {
         type: "object",
         properties: {},
@@ -346,7 +382,7 @@ export const agentTools: ChatCompletionTool[] = [
     function: {
       name: "get_course_summary",
       description:
-        "Get a comprehensive summary of a specific course: current grade, upcoming assignments, recent grades, and study time spent. Use this when the student asks about a specific course.",
+        "Get a deep summary of a specific course: Canvas enrollment score, grade trend (improving/declining/stable), risk level (on_track/warning/at_risk/critical), letter grade, upcoming assignments, recent grades, and study time. Always use this when the student asks about a course.",
       parameters: {
         type: "object",
         properties: {
@@ -417,6 +453,38 @@ export const agentTools: ChatCompletionTool[] = [
       parameters: {
         type: "object",
         properties: {},
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "analyze_course_grade",
+      description:
+        "Analyze a course's grading rubric (from syllabus) against existing grades to project the final grade. Uses AI to parse the syllabus requirements and calculate what grade the student is on track for. Call this when the student asks 'what grade will I get?' or 'what do I need on the final?'.",
+      parameters: {
+        type: "object",
+        properties: {
+          course_id: { type: "string", description: "Course ID" },
+        },
+        required: ["course_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "generate_daily_plan",
+      description:
+        "Generate an intelligent daily plan for the student. Pulls all data (deadlines, calendar, grades, study blocks, emails) and builds a prioritized, time-blocked schedule. Grade-risk-aware: courses with declining/at-risk grades get more study time. Returns a structured plan with reasons for each item.",
+      parameters: {
+        type: "object",
+        properties: {
+          date: {
+            type: "string",
+            description: "Date to plan for (YYYY-MM-DD). Defaults to today.",
+          },
+        },
       },
     },
   },

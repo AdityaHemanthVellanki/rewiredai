@@ -38,7 +38,7 @@ export async function POST() {
       .order("due_date"),
     supabase
       .from("grades")
-      .select("*")
+      .select("*, course:courses(name, code)")
       .eq("user_id", user.id)
       .order("created_at", { ascending: false }),
     supabase
@@ -119,13 +119,27 @@ export async function POST() {
     }
   }
 
+  // Save grade alert nudges
+  for (const alert of output.gradeAlerts) {
+    const severity = alert.risk_level === "critical" ? "nuclear" as const
+      : alert.risk_level === "at_risk" ? "urgent" as const
+      : "firm" as const;
+    await supabase.from("nudges").insert({
+      user_id: user.id,
+      message: alert.message,
+      severity,
+      status: "pending",
+    });
+  }
+
   // Log agent activity
   await supabase.from("agent_activity_log").insert({
     user_id: user.id,
     action: "background_reasoning",
-    description: `Generated ${output.nudges.length} nudges, ${output.insights.length} insights`,
+    description: `Generated ${output.nudges.length} nudges, ${output.gradeAlerts.length} grade alerts, ${output.insights.length} insights`,
     metadata: {
       nudges: output.nudges.length,
+      gradeAlerts: output.gradeAlerts,
       insights: output.insights,
       priorityTask: output.priorityTask,
     },

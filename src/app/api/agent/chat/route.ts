@@ -6,6 +6,7 @@ import { getGoogleAccessToken } from "@/lib/google/auth";
 import {
   fetchCalendarEvents,
   createCalendarEvent,
+  updateCalendarEvent,
   deleteCalendarEvent,
 } from "@/lib/google/calendar";
 import { fetchRecentEmails } from "@/lib/google/gmail";
@@ -98,6 +99,15 @@ export async function POST(request: Request) {
           ...chatHistory,
         ];
 
+        // Track created events for inline cards
+        const createdEvents: Array<{
+          type: "study_block_created" | "calendar_event_created";
+          title: string;
+          start: string;
+          end: string;
+          id: string;
+        }> = [];
+
         // Tool execution loop with iteration limit
         let continueLoop = true;
         let iterations = 0;
@@ -175,6 +185,38 @@ export async function POST(request: Request) {
                 user.id,
                 supabase
               );
+
+              // Detect creation events for inline cards
+              if (tc.function.name === "create_study_block" && result.created && result.studyBlock) {
+                createdEvents.push({
+                  type: "study_block_created",
+                  title: result.studyBlock.title,
+                  start: result.studyBlock.start_time,
+                  end: result.studyBlock.end_time,
+                  id: result.studyBlock.id,
+                });
+              }
+              if (tc.function.name === "create_google_calendar_event" && result.created && result.event) {
+                createdEvents.push({
+                  type: "calendar_event_created",
+                  title: parsedArgs.title,
+                  start: parsedArgs.start_time,
+                  end: parsedArgs.end_time,
+                  id: result.event.id || "",
+                });
+              }
+              if (tc.function.name === "auto_schedule_study" && result.blocks?.length > 0) {
+                for (const blk of result.blocks) {
+                  createdEvents.push({
+                    type: "study_block_created",
+                    title: blk.title,
+                    start: blk.start,
+                    end: blk.end,
+                    id: blk.id || "",
+                  });
+                }
+              }
+
               messages.push({
                 role: "tool",
                 tool_call_id: tc.id,
@@ -193,6 +235,15 @@ export async function POST(request: Request) {
             role: "assistant",
             content: fullResponse,
           });
+        }
+
+        // Emit event cards for created study blocks / calendar events
+        for (const card of createdEvents) {
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({ event_card: card })}\n\n`
+            )
+          );
         }
 
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
@@ -229,6 +280,36 @@ export async function POST(request: Request) {
   });
 }
 
+// Helper: convert percentage to letter grade
+function getLetterGradeFromPercent(pct: number): string {
+  if (pct >= 93) return "A";
+  if (pct >= 90) return "A-";
+  if (pct >= 87) return "B+";
+  if (pct >= 83) return "B";
+  if (pct >= 80) return "B-";
+  if (pct >= 77) return "C+";
+  if (pct >= 73) return "C";
+  if (pct >= 70) return "C-";
+  if (pct >= 67) return "D+";
+  if (pct >= 60) return "D";
+  return "F";
+}
+
+// Helper: convert GPA target to approximate minimum percentage needed
+function gpaTargetToPercent(gpa: number): number {
+  if (gpa >= 4.0) return 93;
+  if (gpa >= 3.7) return 90;
+  if (gpa >= 3.3) return 87;
+  if (gpa >= 3.0) return 83;
+  if (gpa >= 2.7) return 80;
+  if (gpa >= 2.3) return 77;
+  if (gpa >= 2.0) return 73;
+  if (gpa >= 1.7) return 70;
+  if (gpa >= 1.3) return 67;
+  if (gpa >= 1.0) return 60;
+  return 50;
+}
+
 // Helper: fetch Google Calendar events for a date range (with graceful fallback)
 async function fetchGoogleCalendarEvents(
   userId: string,
@@ -262,7 +343,12 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
         .eq("user_id", userId)
         .order("due_date", { ascending: true });
 
-      if (args.status) query = query.eq("status", args.status);
+      if (args.status) {
+        query = query.eq("status", args.status);
+      } else {
+        // By default, exclude completed assignments — only show actionable ones
+        query = query.neq("status", "completed");
+      }
       if (args.course_id) query = query.eq("course_id", args.course_id);
 
       const daysAhead = args.days_ahead || 7;
@@ -284,8 +370,49 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
 
       if (args.course_id) query = query.eq("course_id", args.course_id);
 
-      const { data } = await query;
-      return data || [];
+      const { data: gradeRows } = await query;
+      const allGrades = gradeRows || [];
+
+      // Calculate per-course averages
+      const courseMap = new Map<string, { name: string; code: string; earned: number; possible: number; count: number }>();
+      for (const g of allGrades) {
+        if (g.score == null || g.max_score == null || g.max_score <= 0) continue;
+        const key = g.course_id;
+        const existing = courseMap.get(key);
+        if (existing) {
+          existing.earned += g.score;
+          existing.possible += g.max_score;
+          existing.count++;
+        } else {
+          courseMap.set(key, {
+            name: g.course?.name || "Unknown",
+            code: g.course?.code || "",
+            earned: g.score,
+            possible: g.max_score,
+            count: 1,
+          });
+        }
+      }
+
+      const courseAverages = Array.from(courseMap.entries()).map(([courseId, c]) => {
+        const avg = (c.earned / c.possible) * 100;
+        return {
+          course_id: courseId,
+          course_name: c.name,
+          course_code: c.code,
+          average_percent: Math.round(avg * 10) / 10,
+          letter_grade: getLetterGradeFromPercent(avg),
+          graded_items: c.count,
+          total_earned: c.earned,
+          total_possible: c.possible,
+        };
+      });
+
+      return {
+        grades: allGrades,
+        course_averages: courseAverages,
+        total_grades: allGrades.length,
+      };
     }
 
     case "get_calendar_events": {
@@ -408,8 +535,30 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
     }
 
     case "update_study_block": {
+      // Resolve study block: prefer UUID, fall back to title+date lookup
+      let resolvedBlockId: string | null = args.study_block_id || null;
+
+      if (!resolvedBlockId && args.title) {
+        const lookupDate = args.date || new Date().toISOString().split("T")[0];
+        const { data: found } = await supabase
+          .from("study_blocks")
+          .select("id")
+          .eq("user_id", userId)
+          .ilike("title", `%${args.title}%`)
+          .gte("start_time", `${lookupDate}T00:00:00`)
+          .lte("start_time", `${lookupDate}T23:59:59`)
+          .limit(1)
+          .single();
+        if (found) resolvedBlockId = found.id;
+      }
+
+      if (!resolvedBlockId) {
+        return { error: "Study block not found. Try providing the title and date, or call get_calendar_events to find the ID." };
+      }
+
       const updates: Record<string, unknown> = {};
-      if (args.title) updates.title = args.title;
+      if (args.new_title) updates.title = args.new_title;
+      else if (args.title && args.study_block_id) updates.title = args.title;
       if (args.start_time) updates.start_time = args.start_time;
       if (args.end_time) updates.end_time = args.end_time;
       if (args.status) updates.status = args.status;
@@ -418,7 +567,7 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
       const { data: existing } = await supabase
         .from("study_blocks")
         .select("*")
-        .eq("id", args.study_block_id)
+        .eq("id", resolvedBlockId)
         .eq("user_id", userId)
         .single();
 
@@ -429,18 +578,18 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
       await supabase
         .from("study_blocks")
         .update(updates)
-        .eq("id", args.study_block_id)
+        .eq("id", resolvedBlockId)
         .eq("user_id", userId);
 
       // If time changed and it's synced to Google, update the Google event too
-      if ((args.start_time || args.end_time || args.title) && existing.google_event_id) {
+      const newTitle = (updates.title as string) || existing.title;
+      if ((args.start_time || args.end_time || updates.title) && existing.google_event_id) {
         try {
           const accessToken = await getGoogleAccessToken(userId);
           if (accessToken) {
-            // Delete old event, create new one (simpler than PATCH for partial updates)
             await deleteCalendarEvent(accessToken, existing.google_event_id);
             const calEvent = await createCalendarEvent(accessToken, {
-              summary: `📚 ${args.title || existing.title}`,
+              summary: `📚 ${newTitle}`,
               description: "Study block created by Rewired AI",
               startTime: args.start_time || existing.start_time,
               endTime: args.end_time || existing.end_time,
@@ -449,7 +598,7 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
             await supabase
               .from("study_blocks")
               .update({ google_event_id: calEvent.id })
-              .eq("id", args.study_block_id);
+              .eq("id", resolvedBlockId);
           }
         } catch {
           // Non-critical
@@ -460,11 +609,32 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
     }
 
     case "delete_study_block": {
-      // Get the block first to check for google_event_id
+      // Resolve study block: prefer UUID, fall back to title+date lookup
+      let deleteBlockId: string | null = args.study_block_id || null;
+
+      if (!deleteBlockId && args.title) {
+        const lookupDate = args.date || new Date().toISOString().split("T")[0];
+        const { data: found } = await supabase
+          .from("study_blocks")
+          .select("id")
+          .eq("user_id", userId)
+          .ilike("title", `%${args.title}%`)
+          .gte("start_time", `${lookupDate}T00:00:00`)
+          .lte("start_time", `${lookupDate}T23:59:59`)
+          .limit(1)
+          .single();
+        if (found) deleteBlockId = found.id;
+      }
+
+      if (!deleteBlockId) {
+        return { error: "Study block not found. Try providing the title and date, or call get_calendar_events to find the ID." };
+      }
+
+      // Get the block to check for google_event_id
       const { data: block } = await supabase
         .from("study_blocks")
         .select("google_event_id")
-        .eq("id", args.study_block_id)
+        .eq("id", deleteBlockId)
         .eq("user_id", userId)
         .single();
 
@@ -487,7 +657,7 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
       await supabase
         .from("study_blocks")
         .delete()
-        .eq("id", args.study_block_id)
+        .eq("id", deleteBlockId)
         .eq("user_id", userId);
 
       return { deleted: true, message: "Study block deleted." };
@@ -514,6 +684,30 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
         };
       } catch (err) {
         return { error: err instanceof Error ? err.message : "Failed to create calendar event" };
+      }
+    }
+
+    case "update_google_calendar_event": {
+      try {
+        const accessToken = await getGoogleAccessToken(userId);
+        if (!accessToken) {
+          return { error: "Google account not connected." };
+        }
+
+        const updated = await updateCalendarEvent(accessToken, args.event_id, {
+          summary: args.title,
+          description: args.description,
+          startTime: args.start_time,
+          endTime: args.end_time,
+        });
+
+        return {
+          updated: true,
+          event: { id: updated.id, title: updated.summary },
+          message: `Updated "${updated.summary}" on Google Calendar.`,
+        };
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : "Failed to update calendar event" };
       }
     }
 
@@ -557,41 +751,80 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
     }
 
     case "calculate_grade_needed": {
-      const { data: grades } = await supabase
+      // Fetch grades for this course
+      const { data: calcGrades } = await supabase
         .from("grades")
         .select("score, max_score, weight")
         .eq("user_id", userId)
         .eq("course_id", args.course_id);
 
-      if (!grades || grades.length === 0) {
-        return { error: "No grades found for this course" };
+      if (!calcGrades || calcGrades.length === 0) {
+        return { error: "No grades found for this course. Sync Canvas first to import grades." };
       }
 
-      let earnedWeighted = 0;
-      let totalWeightUsed = 0;
+      // Also try to use Canvas enrollment score (most accurate)
+      let canvasCurrentScore: number | null = null;
+      try {
+        const { data: canvasConn } = await supabase
+          .from("canvas_connections")
+          .select("canvas_base_url, api_token")
+          .eq("user_id", userId)
+          .single();
+        if (canvasConn) {
+          const { data: courseData } = await supabase
+            .from("courses")
+            .select("code")
+            .eq("id", args.course_id)
+            .eq("user_id", userId)
+            .single();
+          if (courseData) {
+            const canvasCourses = await fetchCanvasCourses(canvasConn.canvas_base_url, canvasConn.api_token);
+            const matchedCourse = canvasCourses.find((c) => c.course_code === courseData.code);
+            if (matchedCourse?.enrollments?.[0]?.computed_current_score != null) {
+              canvasCurrentScore = matchedCourse.enrollments[0].computed_current_score;
+            }
+          }
+        }
+      } catch {
+        // Non-critical: fall back to manual calculation
+      }
 
-      for (const g of grades) {
+      // Manual calculation: weighted average from individual grades
+      let totalEarned = 0;
+      let totalPossible = 0;
+      for (const g of calcGrades) {
         if (g.score !== null && g.max_score !== null && g.max_score > 0) {
-          const pct = (g.score / g.max_score) * 100;
-          const w = g.weight || 1;
-          earnedWeighted += pct * w;
-          totalWeightUsed += w;
+          totalEarned += g.score;
+          totalPossible += g.max_score;
         }
       }
 
-      const remainingWeight = args.remaining_assignment_weight || (100 - totalWeightUsed);
-      const currentAvg = totalWeightUsed > 0 ? earnedWeighted / totalWeightUsed : 0;
-      const needed =
-        remainingWeight > 0
-          ? ((args.target_grade * 100 - earnedWeighted) / remainingWeight)
-          : 0;
+      const manualAvg = totalPossible > 0 ? (totalEarned / totalPossible) * 100 : 0;
+      // Prefer Canvas score (it respects assignment group weights), fall back to manual
+      const currentAvg = canvasCurrentScore ?? manualAvg;
+
+      // target_grade is a percentage (e.g. 90 for an A)
+      const target = args.target_grade;
+      const remainingWeight = args.remaining_assignment_weight || 100;
+
+      // Formula: to get target overall, what % do you need on remaining work?
+      // Simplified: if you have N% of points graded at currentAvg, and remaining is R%,
+      // then: (currentAvg * gradedPortion + needed * remainingPortion) / 100 = target
+      const gradedPortion = 100 - remainingWeight;
+      const needed = remainingWeight > 0
+        ? (target * 100 - currentAvg * gradedPortion) / remainingWeight
+        : 0;
 
       return {
         current_average: Math.round(currentAvg * 10) / 10,
-        weight_completed: totalWeightUsed,
-        remaining_weight: remainingWeight,
-        score_needed: Math.round(needed * 10) / 10,
-        achievable: needed <= 100,
+        canvas_score: canvasCurrentScore,
+        total_earned: totalEarned,
+        total_possible: totalPossible,
+        target_grade: target,
+        remaining_weight_percent: remainingWeight,
+        score_needed_on_remaining: Math.round(needed * 10) / 10,
+        achievable: needed <= 100 && needed >= 0,
+        letter_grade_current: getLetterGradeFromPercent(currentAvg),
       };
     }
 
@@ -698,7 +931,9 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
         const baseUrl = canvasConn.canvas_base_url;
         const token = canvasConn.api_token;
         const canvasCourses = await fetchCanvasCourses(baseUrl, token);
-        let synced = 0;
+        let assignmentsSynced = 0;
+        let gradesImported = 0;
+        const courseGradeSummary: Array<{ course: string; score: number | null; grade: string | null }> = [];
 
         for (const cc of canvasCourses) {
           if (cc.workflow_state !== "available") continue;
@@ -711,6 +946,16 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
             .single();
 
           if (!course) continue;
+
+          // Capture Canvas enrollment score (most accurate grade)
+          const enrollment = cc.enrollments?.[0];
+          if (enrollment) {
+            courseGradeSummary.push({
+              course: cc.name,
+              score: enrollment.computed_current_score,
+              grade: enrollment.computed_current_grade,
+            });
+          }
 
           try {
             const [assignments, submissions] = await Promise.all([
@@ -730,14 +975,19 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
                 sub !== undefined &&
                 (["submitted", "graded", "complete"].includes(sub.workflow_state) ||
                   sub.submitted_at !== null);
+              const isGraded =
+                sub !== undefined &&
+                sub.workflow_state === "graded" &&
+                sub.score !== null;
 
               let status: string;
-              if (isCompleted) {
+              if (isCompleted || isGraded) {
                 status = "completed";
               } else {
                 status = new Date(ca.due_at) < new Date() ? "overdue" : "pending";
               }
 
+              // Find existing assignment
               const { data: existing } = await supabase
                 .from("assignments")
                 .select("id")
@@ -745,12 +995,48 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
                 .eq("canvas_assignment_id", ca.id)
                 .single();
 
+              let assignmentId: string | null = existing?.id || null;
+
               if (existing) {
                 await supabase
                   .from("assignments")
                   .update({ status })
                   .eq("id", existing.id);
-                synced++;
+                assignmentsSynced++;
+              }
+
+              // Import grade if graded
+              if (
+                isGraded &&
+                sub.score !== null &&
+                ca.points_possible !== null &&
+                ca.points_possible > 0 &&
+                assignmentId
+              ) {
+                const { data: existingGrade } = await supabase
+                  .from("grades")
+                  .select("id")
+                  .eq("user_id", userId)
+                  .eq("assignment_id", assignmentId)
+                  .single();
+
+                if (existingGrade) {
+                  await supabase
+                    .from("grades")
+                    .update({ score: sub.score, max_score: ca.points_possible })
+                    .eq("id", existingGrade.id);
+                } else {
+                  await supabase.from("grades").insert({
+                    user_id: userId,
+                    course_id: course.id,
+                    assignment_id: assignmentId,
+                    title: ca.name,
+                    score: sub.score,
+                    max_score: ca.points_possible,
+                    weight: ca.points_possible,
+                  });
+                }
+                gradesImported++;
               }
             }
           } catch {
@@ -763,7 +1049,12 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
           .update({ last_synced_at: new Date().toISOString() })
           .eq("user_id", userId);
 
-        return { synced, message: `Synced ${synced} assignments from Canvas.` };
+        return {
+          assignments_synced: assignmentsSynced,
+          grades_imported: gradesImported,
+          canvas_grades: courseGradeSummary,
+          message: `Synced ${assignmentsSynced} assignments and ${gradesImported} grades from Canvas.`,
+        };
       } catch (err) {
         return { error: err instanceof Error ? err.message : "Canvas sync failed" };
       }
@@ -842,7 +1133,7 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
 
       const peakHours = profileData?.productivity_peak_hours || ["09:00", "10:00", "14:00", "15:00"];
       const sleepWindow = profileData?.sleep_window || { sleep: "23:00", wake: "08:00" };
-      const created: Array<{ title: string; start: string; end: string }> = [];
+      const created: Array<{ id: string; title: string; start: string; end: string }> = [];
 
       // Build a unified busy-times list from study blocks + Google Calendar
       const busyTimes: Array<{ start: number; end: number }> = [];
@@ -921,6 +1212,7 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
 
               if (newBlock) {
                 created.push({
+                  id: newBlock.id,
                   title,
                   start: blockStart.toISOString(),
                   end: blockEnd.toISOString(),
@@ -1008,18 +1300,81 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
 
       if (!course) return { error: "Course not found" };
 
-      let weightedSum = 0;
-      let totalWeight = 0;
+      // Calculate grade from our stored grades
+      let totalEarned = 0;
+      let totalPossible = 0;
       for (const g of courseGrades || []) {
         if (g.score !== null && g.max_score !== null && g.max_score > 0) {
-          const pct = (g.score / g.max_score) * 100;
-          const w = g.weight || 1;
-          weightedSum += pct * w;
-          totalWeight += w;
+          totalEarned += g.score;
+          totalPossible += g.max_score;
+        }
+      }
+      const manualAvg = totalPossible > 0 ? (totalEarned / totalPossible) * 100 : null;
+
+      // Try to get Canvas enrollment score (most accurate — respects assignment group weights)
+      let canvasScore: number | null = null;
+      let canvasGrade: string | null = null;
+      try {
+        const { data: canvasConn } = await supabase
+          .from("canvas_connections")
+          .select("canvas_base_url, api_token")
+          .eq("user_id", userId)
+          .single();
+        if (canvasConn) {
+          const canvasCourses = await fetchCanvasCourses(canvasConn.canvas_base_url, canvasConn.api_token);
+          const matched = canvasCourses.find((c) => c.course_code === course.code);
+          if (matched?.enrollments?.[0]) {
+            canvasScore = matched.enrollments[0].computed_current_score;
+            canvasGrade = matched.enrollments[0].computed_current_grade;
+          }
+        }
+      } catch {
+        // Non-critical
+      }
+
+      const currentAvg = canvasScore ?? manualAvg;
+      const letterGrade = canvasGrade || (currentAvg !== null ? getLetterGradeFromPercent(currentAvg) : null);
+
+      // Grade trend: compare last 3 grades vs first 3 grades
+      const validGrades = (courseGrades || []).filter(
+        (g: { score: number | null; max_score: number | null }) => g.score !== null && g.max_score !== null && g.max_score > 0
+      );
+      let trend: "improving" | "declining" | "stable" | "insufficient_data" = "insufficient_data";
+      if (validGrades.length >= 4) {
+        const recent = validGrades.slice(0, 3);
+        const older = validGrades.slice(-3);
+        const recentAvg = recent.reduce((s: number, g: { score: number; max_score: number }) => s + (g.score / g.max_score), 0) / recent.length;
+        const olderAvg = older.reduce((s: number, g: { score: number; max_score: number }) => s + (g.score / g.max_score), 0) / older.length;
+        const diff = recentAvg - olderAvg;
+        trend = diff > 0.03 ? "improving" : diff < -0.03 ? "declining" : "stable";
+      }
+
+      // Risk assessment
+      let riskLevel: "on_track" | "warning" | "at_risk" | "critical" = "on_track";
+      let riskReason = "";
+      const { data: profileForGPA } = await supabase
+        .from("profiles")
+        .select("gpa_target")
+        .eq("id", userId)
+        .single();
+      const gpaTarget = profileForGPA?.gpa_target;
+
+      if (currentAvg !== null) {
+        if (currentAvg < 60) {
+          riskLevel = "critical";
+          riskReason = "Failing grade — immediate action required.";
+        } else if (currentAvg < 70) {
+          riskLevel = "at_risk";
+          riskReason = "Below C — at risk of not passing.";
+        } else if (gpaTarget && currentAvg < gpaTargetToPercent(gpaTarget)) {
+          riskLevel = "warning";
+          riskReason = `Below your GPA target of ${gpaTarget} (need ${gpaTargetToPercent(gpaTarget)}%).`;
+        } else if (trend === "declining") {
+          riskLevel = "warning";
+          riskReason = "Grades are trending downward.";
         }
       }
 
-      const average = totalWeight > 0 ? Math.round((weightedSum / totalWeight) * 10) / 10 : null;
       const pending = (courseAssignments || []).filter(
         (a: { status: string }) => a.status !== "completed"
       );
@@ -1035,20 +1390,34 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
         );
 
       return {
-        course: { name: course.name, code: course.code, professor: course.professor },
-        current_average: average,
-        total_grades: (courseGrades || []).length,
+        course: {
+          name: course.name,
+          code: course.code,
+          professor: course.professor,
+          has_rubric: Array.isArray(course.grading_rubric) && course.grading_rubric.length > 0,
+        },
+        current_average: currentAvg !== null ? Math.round(currentAvg * 10) / 10 : null,
+        letter_grade: letterGrade,
+        canvas_score: canvasScore,
+        grade_trend: trend,
+        risk_level: riskLevel,
+        risk_reason: riskReason,
+        total_grades: validGrades.length,
+        points_earned: totalEarned,
+        points_possible: totalPossible,
         pending_assignments: pending.length,
         completed_assignments: completed.length,
-        upcoming: pending.slice(0, 3).map((a: { title: string; due_date: string; status: string }) => ({
+        upcoming: pending.slice(0, 5).map((a: { title: string; due_date: string; status: string; weight: number | null }) => ({
           title: a.title,
           due_date: a.due_date,
           status: a.status,
+          points: a.weight,
         })),
-        recent_grades: (courseGrades || []).slice(0, 3).map((g: { title: string; score: number; max_score: number }) => ({
+        recent_grades: (courseGrades || []).slice(0, 5).map((g: { title: string; score: number; max_score: number }) => ({
           title: g.title,
           score: g.score,
           max_score: g.max_score,
+          percent: g.max_score > 0 ? Math.round((g.score / g.max_score) * 1000) / 10 : null,
         })),
         study_hours_this_month: Math.round(studyHours * 10) / 10,
       };
@@ -1093,6 +1462,255 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
         .single();
 
       return profileData || { error: "Profile not found" };
+    }
+
+    case "analyze_course_grade": {
+      // Fetch course with grading rubric
+      const { data: courseData } = await supabase
+        .from("courses")
+        .select("id, name, code, grading_rubric")
+        .eq("id", args.course_id)
+        .eq("user_id", userId)
+        .single();
+
+      if (!courseData) return { error: "Course not found" };
+
+      if (
+        !courseData.grading_rubric ||
+        (Array.isArray(courseData.grading_rubric) && courseData.grading_rubric.length === 0)
+      ) {
+        return {
+          error: "No grading rubric found for this course. The student needs to upload their syllabus first (via the Courses page) so I can extract the grading breakdown.",
+        };
+      }
+
+      // Fetch all grades for this course
+      const { data: courseGrades } = await supabase
+        .from("grades")
+        .select("title, score, max_score, weight")
+        .eq("user_id", userId)
+        .eq("course_id", args.course_id);
+
+      // Fetch all assignments for context (pending + completed)
+      const { data: courseAssignments } = await supabase
+        .from("assignments")
+        .select("title, status, due_date, weight")
+        .eq("user_id", userId)
+        .eq("course_id", args.course_id)
+        .order("due_date", { ascending: true });
+
+      // Use Azure OpenAI to analyze grades against rubric
+      const azureClient = getAzureOpenAI();
+      const analysisResponse = await azureClient.chat.completions.create({
+        model: process.env.AZURE_OPENAI_DEPLOYMENT || "gpt-4o",
+        messages: [
+          {
+            role: "system",
+            content: `You are a grade analysis expert. Given a course's grading rubric, existing grades, and assignments, calculate:
+1. Current grade percentage (weighted by rubric categories)
+2. Projected final grade based on current trajectory
+3. What scores are needed on remaining assignments to achieve specific letter grades (A, B, C)
+4. Which categories are pulling the grade down
+
+Return valid JSON:
+{
+  "current_grade_percent": number,
+  "current_letter_grade": "A/A-/B+/B/B-/C+/C/C-/D/F",
+  "projected_final_percent": number,
+  "projected_letter_grade": "string",
+  "category_breakdown": [{"category": "string", "weight_percent": number, "current_avg": number or null, "grades_count": number, "status": "strong/on_track/needs_improvement/no_data"}],
+  "targets": {"for_A": {"min_avg_needed": number, "achievable": boolean}, "for_B": {"min_avg_needed": number, "achievable": boolean}, "for_C": {"min_avg_needed": number, "achievable": boolean}},
+  "insights": ["string array of 2-3 key observations"],
+  "remaining_assignments_count": number
+}`,
+          },
+          {
+            role: "user",
+            content: `Course: ${courseData.name} (${courseData.code})
+
+Grading Rubric:
+${JSON.stringify(courseData.grading_rubric, null, 2)}
+
+Existing Grades (${(courseGrades || []).length} graded items):
+${(courseGrades || []).map((g: { title: string; score: number; max_score: number }) => `- ${g.title}: ${g.score}/${g.max_score} (${((g.score / g.max_score) * 100).toFixed(1)}%)`).join("\n") || "No grades yet"}
+
+All Assignments (${(courseAssignments || []).length} total):
+${(courseAssignments || []).map((a: { title: string; status: string; due_date: string; weight: number | null }) => `- ${a.title} [${a.status}] due ${a.due_date}${a.weight ? ` (${a.weight} pts)` : ""}`).join("\n") || "No assignments"}`,
+          },
+        ],
+        response_format: { type: "json_object" },
+        temperature: 0.1,
+      });
+
+      const analysisContent = analysisResponse.choices[0]?.message?.content;
+      if (!analysisContent) return { error: "Grade analysis failed — no AI response" };
+
+      try {
+        const analysis = JSON.parse(analysisContent);
+        return {
+          course: courseData.name,
+          ...analysis,
+        };
+      } catch {
+        return { error: "Grade analysis returned invalid data" };
+      }
+    }
+
+    case "generate_daily_plan": {
+      const planDate = args.date || new Date().toISOString().split("T")[0];
+
+      // Fetch all context in parallel
+      const [
+        { data: planAssignments },
+        { data: planGrades },
+        { data: planCourses },
+        { data: planBlocks },
+        { data: planEmails },
+        { data: planProfile },
+      ] = await Promise.all([
+        supabase
+          .from("assignments")
+          .select("*, course:courses(name, code, color)")
+          .eq("user_id", userId)
+          .neq("status", "completed")
+          .order("due_date"),
+        supabase
+          .from("grades")
+          .select("*, course:courses(name)")
+          .eq("user_id", userId)
+          .order("created_at", { ascending: false }),
+        supabase.from("courses").select("*").eq("user_id", userId),
+        supabase
+          .from("study_blocks")
+          .select("*")
+          .eq("user_id", userId)
+          .gte("start_time", `${planDate}T00:00:00`)
+          .lte("start_time", `${planDate}T23:59:59`),
+        supabase
+          .from("email_summaries")
+          .select("*")
+          .eq("user_id", userId)
+          .eq("action_required", true)
+          .eq("is_handled", false)
+          .limit(5),
+        supabase.from("profiles").select("*").eq("id", userId).single(),
+      ]);
+
+      // Fetch Google Calendar events for the day
+      let calendarEventsForPlan: Array<{ summary: string; start: string; end: string }> = [];
+      const googleToken = await getGoogleAccessToken(userId);
+      if (googleToken) {
+        try {
+          const events = await fetchCalendarEvents(
+            googleToken,
+            `${planDate}T00:00:00Z`,
+            `${planDate}T23:59:59Z`
+          );
+          calendarEventsForPlan = events.map((e: { summary?: string; start?: { dateTime?: string }; end?: { dateTime?: string } }) => ({
+            summary: e.summary || "Untitled",
+            start: e.start?.dateTime || "",
+            end: e.end?.dateTime || "",
+          }));
+        } catch {
+          // Calendar unavailable
+        }
+      }
+
+      // Calculate per-course grade health
+      const courseHealth: Array<{ name: string; avg: number; risk: string }> = [];
+      for (const course of planCourses || []) {
+        const cGrades = (planGrades || []).filter((g: { course_id: string }) => g.course_id === course.id);
+        const valid = cGrades.filter((g: { score: number | null; max_score: number | null }) => g.score != null && g.max_score != null && g.max_score > 0);
+        if (valid.length > 0) {
+          const earned = valid.reduce((s: number, g: { score: number }) => s + g.score, 0);
+          const possible = valid.reduce((s: number, g: { max_score: number }) => s + g.max_score, 0);
+          const avg = (earned / possible) * 100;
+          const risk = avg < 60 ? "critical" : avg < 70 ? "at_risk" : avg < 80 ? "warning" : "on_track";
+          courseHealth.push({ name: course.name, avg: Math.round(avg * 10) / 10, risk });
+        }
+      }
+
+      // Build AI plan using Azure OpenAI
+      const planClient = getAzureOpenAI();
+      const peakHours = planProfile?.productivity_peak_hours || [];
+      const sleepWindow = planProfile?.sleep_window || { sleep: "23:00", wake: "08:00" };
+
+      const planResponse = await planClient.chat.completions.create({
+        model: process.env.AZURE_OPENAI_DEPLOYMENT || "gpt-4o",
+        messages: [
+          {
+            role: "system",
+            content: `You are an AI academic planner for a college student. Generate an optimal daily plan as JSON.
+
+RULES:
+- NEVER schedule over existing calendar events (classes, meetings)
+- Schedule study sessions during peak productivity hours when possible
+- Prioritize courses with "at_risk" or "critical" grades
+- Prioritize high-weight assignments due soonest
+- Include breaks (10-15 min) between sessions
+- Respect sleep window
+- Each study block should be 45-90 minutes
+- Include a brief reason for WHY each item matters
+
+Return JSON:
+{
+  "plan": [
+    {
+      "time": "HH:MM",
+      "end_time": "HH:MM",
+      "type": "study|deadline|class|email|break",
+      "title": "string",
+      "course_name": "string or null",
+      "priority": "high|medium|low",
+      "reason": "brief reason this matters"
+    }
+  ],
+  "summary": "1-2 sentence overview of the day's priorities",
+  "top_priority": "the single most important thing today"
+}`,
+          },
+          {
+            role: "user",
+            content: `Date: ${planDate}
+Peak hours: ${peakHours.length > 0 ? peakHours.join(", ") : "9:00-12:00, 14:00-17:00"}
+Sleep: ${sleepWindow.sleep} - ${sleepWindow.wake}
+GPA Target: ${planProfile?.gpa_target || "Not set"}
+
+EXISTING CALENDAR (DO NOT SCHEDULE OVER THESE):
+${calendarEventsForPlan.length > 0 ? calendarEventsForPlan.map((e) => `- ${e.summary}: ${e.start} - ${e.end}`).join("\n") : "No calendar events"}
+
+EXISTING STUDY BLOCKS:
+${(planBlocks || []).map((b: { title: string; start_time: string; end_time: string }) => `- ${b.title}: ${b.start_time} - ${b.end_time}`).join("\n") || "None"}
+
+PENDING ASSIGNMENTS (sorted by due date):
+${(planAssignments || []).slice(0, 12).map((a: { title: string; due_date: string; weight: number | null; status: string; course?: { name?: string } }) => `- ${a.title} [${a.status}] due ${a.due_date}${a.weight ? ` (${a.weight} pts)` : ""} — ${a.course?.name || "General"}`).join("\n") || "No assignments"}
+
+COURSE GRADE HEALTH:
+${courseHealth.length > 0 ? courseHealth.map((c) => `- ${c.name}: ${c.avg}% (${c.risk})`).join("\n") : "No grade data"}
+
+ACTION-REQUIRED EMAILS:
+${(planEmails || []).map((e: { subject: string; suggested_action: string | null }) => `- ${e.subject}${e.suggested_action ? ` → ${e.suggested_action}` : ""}`).join("\n") || "None"}`,
+          },
+        ],
+        response_format: { type: "json_object" },
+        temperature: 0.3,
+      });
+
+      const planContent = planResponse.choices[0]?.message?.content;
+      if (!planContent) return { error: "Failed to generate daily plan" };
+
+      try {
+        const plan = JSON.parse(planContent);
+        return {
+          date: planDate,
+          ...plan,
+          course_health: courseHealth,
+          existing_events: calendarEventsForPlan.length,
+          existing_study_blocks: (planBlocks || []).length,
+        };
+      } catch {
+        return { error: "Daily plan generation returned invalid data" };
+      }
     }
 
     default:

@@ -36,19 +36,18 @@ export async function GET(request: Request) {
         );
       }
 
-      // Check if user has completed onboarding
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("onboarding_completed")
-        .eq("id", user.id)
-        .single();
-
-      if (profile && !profile.onboarding_completed) {
-        return NextResponse.redirect(`${origin}/onboarding`);
+      // Fire-and-forget: trigger background syncs on EVERY login (new + returning)
+      // Email sync — always fires since we just stored the Google token
+      if (providerToken) {
+        fetch(`${origin}/api/google/emails`, {
+          method: "POST",
+          headers: {
+            Cookie: request.headers.get("cookie") || "",
+          },
+        }).catch(() => {});
       }
 
-      // Fire-and-forget: trigger background syncs on login
-      // Canvas sync
+      // Canvas sync — only if connected
       const { data: canvasConn } = await supabase
         .from("canvas_connections")
         .select("id")
@@ -64,14 +63,15 @@ export async function GET(request: Request) {
         }).catch(() => {});
       }
 
-      // Email sync
-      if (providerToken) {
-        fetch(`${origin}/api/google/emails`, {
-          method: "POST",
-          headers: {
-            Cookie: request.headers.get("cookie") || "",
-          },
-        }).catch(() => {});
+      // Check if user has completed onboarding
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("onboarding_completed")
+        .eq("id", user.id)
+        .single();
+
+      if (profile && !profile.onboarding_completed) {
+        return NextResponse.redirect(`${origin}/onboarding`);
       }
 
       return NextResponse.redirect(`${origin}${next}`);

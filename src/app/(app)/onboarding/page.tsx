@@ -286,6 +286,9 @@ function OnboardingContent() {
       });
 
       if (res.ok) {
+        // Fire-and-forget syncs after onboarding completes
+        fetch("/api/canvas/sync", { method: "POST" }).catch(() => {});
+        fetch("/api/google/emails", { method: "POST" }).catch(() => {});
         toast.success("You're all set! Let's go.");
         router.push("/dashboard");
       }
