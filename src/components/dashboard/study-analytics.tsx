@@ -9,6 +9,7 @@ import {
   ResponsiveContainer,
   Cell,
 } from "recharts";
+import { AnimatedCounter } from "@/components/ui/animated-counter";
 
 interface StudyDay {
   day: string;
@@ -44,21 +45,21 @@ export function StudyAnalytics({
     <div className="space-y-4">
       {/* Stats row */}
       <div className="grid grid-cols-3 gap-3">
-        <div className="rounded-lg bg-purple-500/10 p-3 text-center">
+        <div className="rounded-lg bg-purple-500/10 p-3 text-center hover-lift transition-all">
           <div className="text-xl font-bold text-purple-400">
-            {totalHours.toFixed(1)}h
+            <AnimatedCounter value={totalHours} decimals={1} suffix="h" />
           </div>
           <div className="text-[10px] text-muted-foreground">studied</div>
         </div>
-        <div className="rounded-lg bg-emerald-500/10 p-3 text-center">
+        <div className="rounded-lg bg-emerald-500/10 p-3 text-center hover-lift transition-all">
           <div className="text-xl font-bold text-emerald-400">
-            {completionRate}%
+            <AnimatedCounter value={completionRate} suffix="%" />
           </div>
           <div className="text-[10px] text-muted-foreground">follow-through</div>
         </div>
-        <div className="rounded-lg bg-blue-500/10 p-3 text-center">
+        <div className="rounded-lg bg-blue-500/10 p-3 text-center hover-lift transition-all">
           <div className="text-xl font-bold text-blue-400">
-            {completedBlocks}
+            <AnimatedCounter value={completedBlocks} />
           </div>
           <div className="text-[10px] text-muted-foreground">sessions</div>
         </div>
@@ -74,9 +75,9 @@ export function StudyAnalytics({
         </div>
         <div className="relative h-2.5 w-full overflow-hidden rounded-full bg-white/5">
           <div
-            className="absolute left-0 top-0 h-full rounded-full transition-all duration-700"
+            className="absolute left-0 top-0 h-full rounded-full animate-progress-fill"
             style={{
-              width: `${targetProgress}%`,
+              ["--progress-target" as string]: `${targetProgress}%`,
               background:
                 targetProgress >= 100
                   ? "linear-gradient(90deg, #34d399, #10b981)"
@@ -89,7 +90,7 @@ export function StudyAnalytics({
       </div>
 
       {/* Bar chart */}
-      <div className="h-[140px]">
+      <div className="h-[140px] animate-fade-in" style={{ animationDelay: "0.3s" }}>
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={weekData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
             <XAxis

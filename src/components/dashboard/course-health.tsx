@@ -45,8 +45,14 @@ export function CourseHealthGrid({ courses, gpaTarget }: CourseHealthGridProps) 
 
   return (
     <div className="grid gap-3 sm:grid-cols-2">
-      {courses.map((course) => (
-        <CourseCard key={course.courseId} course={course} gpaTarget={gpaTarget} />
+      {courses.map((course, index) => (
+        <div
+          key={course.courseId}
+          className="animate-card-enter-up"
+          style={{ ["--stagger-delay" as string]: `${index * 0.08}s` }}
+        >
+          <CourseCard course={course} gpaTarget={gpaTarget} />
+        </div>
       ))}
     </div>
   );
@@ -63,7 +69,6 @@ function CourseCard({
   const targetPct = gpaTarget ? gpaToPercent(gpaTarget) : null;
   const isAboveTarget = displayScore !== null && targetPct !== null && displayScore >= targetPct;
 
-  // Mini bar chart data from recent grades
   const miniData = course.recentGrades.slice(-6).map((g, i) => ({
     idx: i,
     pct: g.maxScore > 0 ? (g.score / g.maxScore) * 100 : 0,
@@ -99,11 +104,14 @@ function CourseCard({
 
   return (
     <div
-      className={`relative overflow-hidden rounded-xl border p-4 transition-all hover:scale-[1.01] ${riskColors[course.riskLevel]} ${riskBg[course.riskLevel]}`}
+      className={`group relative overflow-hidden rounded-xl border p-4 transition-all duration-200 hover-lift ${riskColors[course.riskLevel]} ${riskBg[course.riskLevel]}`}
+      style={{
+        ["--tw-shadow-color" as string]: `${course.color}15`,
+      }}
     >
       {/* Course color accent bar */}
       <div
-        className="absolute left-0 top-0 h-full w-1 rounded-l-xl"
+        className="absolute left-0 top-0 h-full w-1 rounded-l-xl transition-all duration-300 group-hover:w-1.5"
         style={{ backgroundColor: course.color }}
       />
 
@@ -120,7 +128,7 @@ function CourseCard({
             )}
           </div>
           <div className="ml-2 text-right">
-            <div className="text-2xl font-bold tracking-tight">{course.letterGrade}</div>
+            <div className="text-2xl font-bold tracking-tight animate-number-pop">{course.letterGrade}</div>
             {displayScore !== null && (
               <div className="text-xs text-muted-foreground">
                 {displayScore.toFixed(1)}%
@@ -134,9 +142,9 @@ function CourseCard({
           <div className="mt-3">
             <div className="relative h-2 w-full overflow-hidden rounded-full bg-white/5">
               <div
-                className="absolute left-0 top-0 h-full rounded-full transition-all duration-500"
+                className="absolute left-0 top-0 h-full rounded-full animate-progress-fill"
                 style={{
-                  width: `${Math.min(displayScore, 100)}%`,
+                  ["--progress-target" as string]: `${Math.min(displayScore, 100)}%`,
                   background: `linear-gradient(90deg, ${course.color}99, ${course.color})`,
                 }}
               />
@@ -164,7 +172,7 @@ function CourseCard({
 
         {/* Mini sparkline */}
         {miniData.length >= 2 && (
-          <div className="mt-2 h-[32px]">
+          <div className="mt-2 h-[32px] animate-fade-in" style={{ animationDelay: "0.4s" }}>
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={miniData} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
                 <Bar dataKey="pct" radius={[2, 2, 0, 0]}>

@@ -24,6 +24,8 @@ import { StudyAnalytics } from "@/components/dashboard/study-analytics";
 import { DeadlinePipeline } from "@/components/dashboard/deadline-pipeline";
 import { TodaysPlan } from "@/components/dashboard/todays-plan";
 import { ActivityFeed } from "@/components/dashboard/activity-feed";
+import { DashboardShell, DashboardSection } from "@/components/dashboard/dashboard-shell";
+import { AnimatedCounter } from "@/components/ui/animated-counter";
 
 export default async function DashboardPage() {
   const supabase = await createClient();
@@ -314,266 +316,278 @@ export default async function DashboardPage() {
   const overallGpa = computeOverallGpa(courseHealthData);
 
   return (
-    <div className="space-y-6 pb-8">
+    <DashboardShell>
       {/* ====== HEADER ====== */}
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">
-            Dashboard
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            {now.toLocaleDateString("en-US", {
-              weekday: "long",
-              month: "long",
-              day: "numeric",
-            })}
-          </p>
+      <DashboardSection>
+        <div className="flex items-start justify-between">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">
+              Dashboard
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              {now.toLocaleDateString("en-US", {
+                weekday: "long",
+                month: "long",
+                day: "numeric",
+              })}
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            {profile?.streak_count > 0 && (
+              <div className="flex items-center gap-1.5 rounded-full bg-orange-500/10 px-3 py-1.5 text-orange-400 hover-lift">
+                <Flame className="h-4 w-4" />
+                <span className="text-sm font-bold">{profile.streak_count}d</span>
+              </div>
+            )}
+            {overallGpa !== null && (
+              <div className="flex items-center gap-1.5 rounded-full bg-purple-500/10 px-3 py-1.5 text-purple-400 hover-lift">
+                <GraduationCap className="h-4 w-4" />
+                <span className="text-sm font-bold">{overallGpa}</span>
+              </div>
+            )}
+          </div>
         </div>
-        <div className="flex items-center gap-3">
-          {profile?.streak_count > 0 && (
-            <div className="flex items-center gap-1.5 rounded-full bg-orange-500/10 px-3 py-1.5 text-orange-400">
-              <Flame className="h-4 w-4" />
-              <span className="text-sm font-bold">{profile.streak_count}d</span>
-            </div>
-          )}
-          {overallGpa !== null && (
-            <div className="flex items-center gap-1.5 rounded-full bg-purple-500/10 px-3 py-1.5 text-purple-400">
-              <GraduationCap className="h-4 w-4" />
-              <span className="text-sm font-bold">{overallGpa}</span>
-            </div>
-          )}
-        </div>
-      </div>
+      </DashboardSection>
 
       {/* ====== HERO: PRIORITY + QUICK STATS ====== */}
-      <div className="grid gap-4 lg:grid-cols-3">
-        {/* Priority Task — big hero card */}
-        {priorityTask ? (
-          <Card className="relative overflow-hidden border-purple-500/20 bg-gradient-to-br from-purple-500/10 via-transparent to-indigo-500/5 lg:col-span-2">
-            <div className="absolute right-0 top-0 h-32 w-32 bg-purple-500/5 blur-3xl" />
-            <CardContent className="relative flex items-center gap-5 p-6">
-              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-purple-500/15">
-                <Target className="h-7 w-7 text-purple-400" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-[11px] font-semibold uppercase tracking-widest text-purple-400/80">
-                  Focus right now
-                </p>
-                <p className="mt-1 truncate text-lg font-bold">
-                  {priorityTask.title}
-                </p>
-                <p className="mt-0.5 text-sm text-muted-foreground">
-                  {priorityTask.reason}
-                </p>
-              </div>
-              <a
-                href="/chat"
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-purple-500/15 text-purple-400 transition-colors hover:bg-purple-500/25"
-              >
-                <ArrowRight className="h-5 w-5" />
-              </a>
-            </CardContent>
-          </Card>
-        ) : (
-          <Card className="border-emerald-500/20 bg-emerald-500/5 lg:col-span-2">
-            <CardContent className="flex items-center gap-4 p-6">
-              <CheckCircle2 className="h-8 w-8 text-emerald-400" />
-              <div>
-                <p className="text-sm font-medium text-emerald-400">
-                  All caught up!
-                </p>
-                <p className="text-sm text-muted-foreground">
-                  No urgent tasks. Great job staying on top of things.
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-        )}
+      <DashboardSection>
+        <div className="grid gap-4 lg:grid-cols-3">
+          {/* Priority Task — big hero card */}
+          {priorityTask ? (
+            <Card className="relative overflow-hidden border-purple-500/20 bg-gradient-to-br from-purple-500/10 via-transparent to-indigo-500/5 lg:col-span-2 hover-lift animate-glow-pulse">
+              <div className="absolute right-0 top-0 h-32 w-32 bg-purple-500/5 blur-3xl" />
+              <CardContent className="relative flex items-center gap-5 p-6">
+                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-purple-500/15">
+                  <Target className="h-7 w-7 text-purple-400" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[11px] font-semibold uppercase tracking-widest text-purple-400/80">
+                    Focus right now
+                  </p>
+                  <p className="mt-1 truncate text-lg font-bold">
+                    {priorityTask.title}
+                  </p>
+                  <p className="mt-0.5 text-sm text-muted-foreground">
+                    {priorityTask.reason}
+                  </p>
+                </div>
+                <a
+                  href="/chat"
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-purple-500/15 text-purple-400 transition-all hover:bg-purple-500/25 hover:scale-110 active-press"
+                >
+                  <ArrowRight className="h-5 w-5" />
+                </a>
+              </CardContent>
+            </Card>
+          ) : (
+            <Card className="border-emerald-500/20 bg-emerald-500/5 lg:col-span-2 hover-lift">
+              <CardContent className="flex items-center gap-4 p-6">
+                <CheckCircle2 className="h-8 w-8 text-emerald-400" />
+                <div>
+                  <p className="text-sm font-medium text-emerald-400">
+                    All caught up!
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    No urgent tasks. Great job staying on top of things.
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
-        {/* Quick Stats Column */}
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-1 lg:gap-3">
-          <div className="flex items-center gap-3 rounded-xl border border-border/40 p-3">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-orange-500/10">
-              <Clock className="h-4 w-4 text-orange-400" />
-            </div>
-            <div>
-              <div className="text-lg font-bold leading-none">
-                {typedAssignments.length}
+          {/* Quick Stats Column */}
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-1 lg:gap-3">
+            <div className="flex items-center gap-3 rounded-xl border border-border/40 p-3 hover-lift transition-all">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-orange-500/10">
+                <Clock className="h-4 w-4 text-orange-400" />
               </div>
-              <div className="mt-0.5 text-[11px] text-muted-foreground">
-                deadlines
-                {overdueCount > 0 && (
-                  <span className="ml-1 text-red-400">
-                    ({overdueCount} overdue)
-                  </span>
+              <div>
+                <div className="text-lg font-bold leading-none">
+                  <AnimatedCounter value={typedAssignments.length} />
+                </div>
+                <div className="mt-0.5 text-[11px] text-muted-foreground">
+                  deadlines
+                  {overdueCount > 0 && (
+                    <span className="ml-1 text-red-400 animate-overdue-pulse">
+                      ({overdueCount} overdue)
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 rounded-xl border border-border/40 p-3 hover-lift transition-all">
+              <div
+                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
+                  coursesAtRisk > 0 ? "bg-red-500/10" : "bg-emerald-500/10"
+                }`}
+              >
+                {coursesAtRisk > 0 ? (
+                  <AlertTriangle className="h-4 w-4 text-red-400" />
+                ) : (
+                  <CheckCircle2 className="h-4 w-4 text-emerald-400" />
                 )}
               </div>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3 rounded-xl border border-border/40 p-3">
-            <div
-              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
-                coursesAtRisk > 0 ? "bg-red-500/10" : "bg-emerald-500/10"
-              }`}
-            >
-              {coursesAtRisk > 0 ? (
-                <AlertTriangle className="h-4 w-4 text-red-400" />
-              ) : (
-                <CheckCircle2 className="h-4 w-4 text-emerald-400" />
-              )}
-            </div>
-            <div>
-              <div className="text-lg font-bold leading-none">
-                {coursesAtRisk > 0 ? coursesAtRisk : typedCourses.length}
-              </div>
-              <div className="mt-0.5 text-[11px] text-muted-foreground">
-                {coursesAtRisk > 0 ? "courses at risk" : "courses on track"}
+              <div>
+                <div className="text-lg font-bold leading-none">
+                  <AnimatedCounter value={coursesAtRisk > 0 ? coursesAtRisk : typedCourses.length} />
+                </div>
+                <div className="mt-0.5 text-[11px] text-muted-foreground">
+                  {coursesAtRisk > 0 ? "courses at risk" : "courses on track"}
+                </div>
               </div>
             </div>
           </div>
         </div>
-      </div>
+      </DashboardSection>
 
       {/* ====== TODAY'S PLAN ====== */}
-      <Card className="border-border/30">
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <div className="flex h-6 w-6 items-center justify-center rounded-md bg-gradient-to-br from-purple-500/20 to-blue-500/20">
-              <Sparkles className="h-3.5 w-3.5 text-purple-400" />
-            </div>
-            Today&apos;s Plan
-            <Badge variant="secondary" className="ml-auto text-[10px]">
-              AI-Powered
-            </Badge>
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <TodaysPlan
-            planItems={todayPlanItems}
-            greeting={greeting}
-            topInsight={topInsight}
-          />
-        </CardContent>
-      </Card>
-
-      {/* ====== MAIN GRID: GRADES + STUDY ====== */}
-      <div className="grid gap-6 lg:grid-cols-2">
-        {/* Grade Performance */}
-        <Card className="border-border/30">
+      <DashboardSection>
+        <Card className="border-border/30 hover-lift">
           <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <div className="flex h-6 w-6 items-center justify-center rounded-md bg-purple-500/15">
-                <TrendingUp className="h-3.5 w-3.5 text-purple-400" />
+            <CardTitle className="flex items-center gap-2 text-base gradient-underline">
+              <div className="flex h-6 w-6 items-center justify-center rounded-md bg-gradient-to-br from-purple-500/20 to-blue-500/20">
+                <Sparkles className="h-3.5 w-3.5 text-purple-400" />
               </div>
-              Grade Trajectory
-              {profile?.gpa_target && (
-                <span className="ml-auto text-xs font-normal text-muted-foreground">
-                  Target: {profile.gpa_target} GPA
-                </span>
-              )}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <GpaChart
-              gradeHistory={gradeHistory}
-              gpaTarget={profile?.gpa_target || null}
-            />
-          </CardContent>
-        </Card>
-
-        {/* Study Analytics */}
-        <Card className="border-border/30">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <div className="flex h-6 w-6 items-center justify-center rounded-md bg-blue-500/15">
-                <BarChart3 className="h-3.5 w-3.5 text-blue-400" />
-              </div>
-              Study Analytics
-              <span className="ml-auto text-xs font-normal text-muted-foreground">
-                this week
-              </span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <StudyAnalytics
-              weekData={weekData}
-              totalHours={studyHoursThisWeek}
-              completedBlocks={completedBlocks}
-              skippedBlocks={skippedBlocks}
-              weeklyTarget={20}
-            />
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* ====== COURSE HEALTH GRID ====== */}
-      <Card className="border-border/30">
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <div className="flex h-6 w-6 items-center justify-center rounded-md bg-indigo-500/15">
-              <GraduationCap className="h-3.5 w-3.5 text-indigo-400" />
-            </div>
-            Course Health
-            <span className="ml-auto text-xs font-normal text-muted-foreground">
-              {courseHealthData.filter((c) => c.average !== null).length} of{" "}
-              {courseHealthData.length} with grades
-            </span>
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <CourseHealthGrid
-            courses={courseHealthData}
-            gpaTarget={profile?.gpa_target || null}
-          />
-        </CardContent>
-      </Card>
-
-      {/* ====== BOTTOM: DEADLINES + ACTIVITY FEED ====== */}
-      <div className="grid gap-6 lg:grid-cols-2">
-        {/* Deadline Pipeline */}
-        <Card className="border-border/30">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <div className="flex h-6 w-6 items-center justify-center rounded-md bg-orange-500/15">
-                <CalendarDays className="h-3.5 w-3.5 text-orange-400" />
-              </div>
-              Deadline Pipeline
-              <Badge
-                variant={overdueCount > 0 ? "destructive" : "secondary"}
-                className="ml-auto text-[10px]"
-              >
-                {typedAssignments.length} active
+              Today&apos;s Plan
+              <Badge variant="secondary" className="ml-auto text-[10px]">
+                AI-Powered
               </Badge>
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <DeadlinePipeline deadlines={deadlinePipeline} />
+            <TodaysPlan
+              planItems={todayPlanItems}
+              greeting={greeting}
+              topInsight={topInsight}
+            />
           </CardContent>
         </Card>
+      </DashboardSection>
 
-        {/* Activity Feed */}
-        <Card className="border-border/30">
+      {/* ====== MAIN GRID: GRADES + STUDY ====== */}
+      <DashboardSection>
+        <div className="grid gap-6 lg:grid-cols-2">
+          {/* Grade Performance */}
+          <Card className="border-border/30 hover-lift">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-base gradient-underline">
+                <div className="flex h-6 w-6 items-center justify-center rounded-md bg-purple-500/15">
+                  <TrendingUp className="h-3.5 w-3.5 text-purple-400" />
+                </div>
+                Grade Trajectory
+                {profile?.gpa_target && (
+                  <span className="ml-auto text-xs font-normal text-muted-foreground">
+                    Target: {profile.gpa_target} GPA
+                  </span>
+                )}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <GpaChart
+                gradeHistory={gradeHistory}
+                gpaTarget={profile?.gpa_target || null}
+              />
+            </CardContent>
+          </Card>
+
+          {/* Study Analytics */}
+          <Card className="border-border/30 hover-lift">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-base gradient-underline">
+                <div className="flex h-6 w-6 items-center justify-center rounded-md bg-blue-500/15">
+                  <BarChart3 className="h-3.5 w-3.5 text-blue-400" />
+                </div>
+                Study Analytics
+                <span className="ml-auto text-xs font-normal text-muted-foreground">
+                  this week
+                </span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <StudyAnalytics
+                weekData={weekData}
+                totalHours={studyHoursThisWeek}
+                completedBlocks={completedBlocks}
+                skippedBlocks={skippedBlocks}
+                weeklyTarget={20}
+              />
+            </CardContent>
+          </Card>
+        </div>
+      </DashboardSection>
+
+      {/* ====== COURSE HEALTH GRID ====== */}
+      <DashboardSection>
+        <Card className="border-border/30 hover-lift">
           <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <div className="flex h-6 w-6 items-center justify-center rounded-md bg-emerald-500/15">
-                <Brain className="h-3.5 w-3.5 text-emerald-400" />
+            <CardTitle className="flex items-center gap-2 text-base gradient-underline">
+              <div className="flex h-6 w-6 items-center justify-center rounded-md bg-indigo-500/15">
+                <GraduationCap className="h-3.5 w-3.5 text-indigo-400" />
               </div>
-              Agent Activity
-              <a
-                href="/chat"
-                className="ml-auto flex items-center gap-1 text-xs font-normal text-purple-400 hover:text-purple-300"
-              >
-                Chat <ArrowRight className="h-3 w-3" />
-              </a>
+              Course Health
+              <span className="ml-auto text-xs font-normal text-muted-foreground">
+                {courseHealthData.filter((c) => c.average !== null).length} of{" "}
+                {courseHealthData.length} with grades
+              </span>
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <ActivityFeed items={feedItems} />
+            <CourseHealthGrid
+              courses={courseHealthData}
+              gpaTarget={profile?.gpa_target || null}
+            />
           </CardContent>
         </Card>
-      </div>
-    </div>
+      </DashboardSection>
+
+      {/* ====== BOTTOM: DEADLINES + ACTIVITY FEED ====== */}
+      <DashboardSection>
+        <div className="grid gap-6 lg:grid-cols-2">
+          {/* Deadline Pipeline */}
+          <Card className="border-border/30 hover-lift">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-base gradient-underline">
+                <div className="flex h-6 w-6 items-center justify-center rounded-md bg-orange-500/15">
+                  <CalendarDays className="h-3.5 w-3.5 text-orange-400" />
+                </div>
+                Deadline Pipeline
+                <Badge
+                  variant={overdueCount > 0 ? "destructive" : "secondary"}
+                  className="ml-auto text-[10px]"
+                >
+                  {typedAssignments.length} active
+                </Badge>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <DeadlinePipeline deadlines={deadlinePipeline} />
+            </CardContent>
+          </Card>
+
+          {/* Activity Feed */}
+          <Card className="border-border/30 hover-lift">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-base gradient-underline">
+                <div className="flex h-6 w-6 items-center justify-center rounded-md bg-emerald-500/15">
+                  <Brain className="h-3.5 w-3.5 text-emerald-400" />
+                </div>
+                Agent Activity
+                <a
+                  href="/chat"
+                  className="ml-auto flex items-center gap-1 text-xs font-normal text-purple-400 hover:text-purple-300 transition-colors"
+                >
+                  Chat <ArrowRight className="h-3 w-3" />
+                </a>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ActivityFeed items={feedItems} />
+            </CardContent>
+          </Card>
+        </div>
+      </DashboardSection>
+    </DashboardShell>
   );
 }
 

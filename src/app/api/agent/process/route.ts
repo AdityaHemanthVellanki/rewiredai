@@ -132,16 +132,20 @@ export async function POST() {
     });
   }
 
-  // Log agent activity
+  // Log agent activity with full intelligence data
   await supabase.from("agent_activity_log").insert({
     user_id: user.id,
     action: "background_reasoning",
-    description: `Generated ${output.nudges.length} nudges, ${output.gradeAlerts.length} grade alerts, ${output.insights.length} insights`,
+    description: `Generated ${output.nudges.length} nudges, ${output.gradeAlerts.length} grade alerts, ${output.gradeCliffs.length} grade cliffs, ${output.insights.length} insights | Procrastination: ${output.procrastinationScore}/100 | Burnout: ${output.burnoutRisk}${output.semesterProjection ? ` | Projected GPA: ${output.semesterProjection.projected_gpa}` : ""}`,
     metadata: {
       nudges: output.nudges.length,
       gradeAlerts: output.gradeAlerts,
+      gradeCliffs: output.gradeCliffs,
       insights: output.insights,
       priorityTask: output.priorityTask,
+      procrastinationScore: output.procrastinationScore,
+      burnoutRisk: output.burnoutRisk,
+      semesterProjection: output.semesterProjection,
     },
   });
 

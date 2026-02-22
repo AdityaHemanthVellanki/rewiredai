@@ -14,6 +14,7 @@ import {
 import { cn } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/client";
 import { useRouter } from "next/navigation";
+import { motion } from "motion/react";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -37,7 +38,9 @@ export function Sidebar() {
     <aside className="fixed left-0 top-0 z-40 flex h-screen w-64 flex-col border-r border-border/50 bg-card/50 backdrop-blur-xl">
       {/* Logo */}
       <div className="flex h-16 items-center gap-2 border-b border-border/50 px-6">
-        <Zap className="h-6 w-6 text-purple-500" />
+        <div className="animate-glow-pulse rounded-lg p-1">
+          <Zap className="h-6 w-6 text-purple-500" />
+        </div>
         <span className="text-xl font-bold">Rewired</span>
       </div>
 
@@ -51,26 +54,50 @@ export function Sidebar() {
               key={item.href}
               href={item.href}
               className={cn(
-                "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                "group relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-200",
                 isActive
-                  ? "bg-purple-500/10 text-purple-400"
-                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                  ? "text-purple-400"
+                  : "text-muted-foreground hover:text-foreground"
               )}
             >
-              <item.icon className="h-5 w-5" />
-              {item.label}
+              {isActive && (
+                <motion.div
+                  layoutId="sidebar-active"
+                  className="absolute inset-0 rounded-lg bg-purple-500/10"
+                  transition={{
+                    type: "spring",
+                    stiffness: 500,
+                    damping: 35,
+                  }}
+                />
+              )}
+              <span className="relative z-10 flex items-center gap-3">
+                <item.icon
+                  className={cn(
+                    "h-5 w-5 transition-transform duration-200 group-hover:scale-110",
+                    !isActive && "group-hover:rotate-[-3deg]"
+                  )}
+                />
+                {item.label}
+              </span>
+              {!isActive && (
+                <div className="absolute inset-0 rounded-lg opacity-0 transition-opacity duration-200 group-hover:opacity-100 bg-accent/50" />
+              )}
             </Link>
           );
         })}
       </nav>
 
+      {/* Divider */}
+      <div className="mx-4 h-px bg-gradient-to-r from-transparent via-border/50 to-transparent" />
+
       {/* Sign Out */}
-      <div className="border-t border-border/50 p-4">
+      <div className="p-4">
         <button
           onClick={handleSignOut}
-          className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          className="group flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-muted-foreground transition-all duration-200 hover:bg-accent/50 hover:text-foreground"
         >
-          <LogOut className="h-5 w-5" />
+          <LogOut className="h-5 w-5 transition-transform duration-200 group-hover:scale-110" />
           Sign Out
         </button>
       </div>

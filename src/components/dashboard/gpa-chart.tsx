@@ -32,7 +32,6 @@ export function GpaChart({ gradeHistory, gpaTarget }: GpaChartProps) {
     );
   }
 
-  // Group grades by course and build cumulative average per date
   const courseMap = new Map<string, { color: string; points: { date: string; pct: number }[] }>();
   for (const g of gradeHistory) {
     const existing = courseMap.get(g.course);
@@ -46,7 +45,6 @@ export function GpaChart({ gradeHistory, gpaTarget }: GpaChartProps) {
     }
   }
 
-  // Build combined timeline with running averages per course
   const allDates = [...new Set(gradeHistory.map((g) => g.date))].sort();
   const courseNames = [...courseMap.keys()];
 
@@ -73,7 +71,6 @@ export function GpaChart({ gradeHistory, gpaTarget }: GpaChartProps) {
     return point;
   });
 
-  // Course colors
   const colorMap: Record<string, string> = {};
   for (const [name, data] of courseMap) {
     colorMap[name] = data.color;
@@ -82,81 +79,83 @@ export function GpaChart({ gradeHistory, gpaTarget }: GpaChartProps) {
   const targetPercent = gpaTarget ? gpaToPercent(gpaTarget) : null;
 
   return (
-    <ResponsiveContainer width="100%" height={220}>
-      <AreaChart data={chartData} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
-        <defs>
-          <linearGradient id="overallGradient" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%" stopColor="#a78bfa" stopOpacity={0.3} />
-            <stop offset="95%" stopColor="#a78bfa" stopOpacity={0} />
-          </linearGradient>
-          {courseNames.map((name) => (
-            <linearGradient key={name} id={`gradient-${name.replace(/\s/g, "")}`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor={colorMap[name] || "#6366f1"} stopOpacity={0.15} />
-              <stop offset="95%" stopColor={colorMap[name] || "#6366f1"} stopOpacity={0} />
+    <div className="animate-fade-in" style={{ animationDelay: "0.2s" }}>
+      <ResponsiveContainer width="100%" height={220}>
+        <AreaChart data={chartData} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
+          <defs>
+            <linearGradient id="overallGradient" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor="#a78bfa" stopOpacity={0.3} />
+              <stop offset="95%" stopColor="#a78bfa" stopOpacity={0} />
             </linearGradient>
-          ))}
-        </defs>
-        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-        <XAxis
-          dataKey="date"
-          tick={{ fill: "rgba(255,255,255,0.4)", fontSize: 11 }}
-          axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
-          tickLine={false}
-        />
-        <YAxis
-          domain={[0, 100]}
-          tick={{ fill: "rgba(255,255,255,0.4)", fontSize: 11 }}
-          axisLine={false}
-          tickLine={false}
-          tickFormatter={(v) => `${v}%`}
-        />
-        <Tooltip
-          contentStyle={{
-            backgroundColor: "rgba(30, 30, 30, 0.95)",
-            border: "1px solid rgba(255,255,255,0.1)",
-            borderRadius: "8px",
-            fontSize: "12px",
-          }}
-          labelStyle={{ color: "rgba(255,255,255,0.7)" }}
-          formatter={(value) => [`${value}%`, ""]}
-        />
-        {targetPercent && (
-          <Area
-            type="monotone"
-            dataKey={() => targetPercent}
-            stroke="#facc15"
-            strokeDasharray="6 4"
-            strokeWidth={1}
-            fill="none"
-            name={`GPA Target (${gpaTarget})`}
-            dot={false}
+            {courseNames.map((name) => (
+              <linearGradient key={name} id={`gradient-${name.replace(/\s/g, "")}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor={colorMap[name] || "#6366f1"} stopOpacity={0.15} />
+                <stop offset="95%" stopColor={colorMap[name] || "#6366f1"} stopOpacity={0} />
+              </linearGradient>
+            ))}
+          </defs>
+          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+          <XAxis
+            dataKey="date"
+            tick={{ fill: "rgba(255,255,255,0.4)", fontSize: 11 }}
+            axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
+            tickLine={false}
           />
-        )}
-        {courseNames.map((name) => (
+          <YAxis
+            domain={[0, 100]}
+            tick={{ fill: "rgba(255,255,255,0.4)", fontSize: 11 }}
+            axisLine={false}
+            tickLine={false}
+            tickFormatter={(v) => `${v}%`}
+          />
+          <Tooltip
+            contentStyle={{
+              backgroundColor: "rgba(30, 30, 30, 0.95)",
+              border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: "8px",
+              fontSize: "12px",
+            }}
+            labelStyle={{ color: "rgba(255,255,255,0.7)" }}
+            formatter={(value) => [`${value}%`, ""]}
+          />
+          {targetPercent && (
+            <Area
+              type="monotone"
+              dataKey={() => targetPercent}
+              stroke="#facc15"
+              strokeDasharray="6 4"
+              strokeWidth={1}
+              fill="none"
+              name={`GPA Target (${gpaTarget})`}
+              dot={false}
+            />
+          )}
+          {courseNames.map((name) => (
+            <Area
+              key={name}
+              type="monotone"
+              dataKey={name}
+              stroke={colorMap[name] || "#6366f1"}
+              strokeWidth={1.5}
+              fill={`url(#gradient-${name.replace(/\s/g, "")})`}
+              dot={false}
+              connectNulls
+              name={name}
+            />
+          ))}
           <Area
-            key={name}
             type="monotone"
-            dataKey={name}
-            stroke={colorMap[name] || "#6366f1"}
-            strokeWidth={1.5}
-            fill={`url(#gradient-${name.replace(/\s/g, "")})`}
+            dataKey="Overall"
+            stroke="#a78bfa"
+            strokeWidth={2.5}
+            fill="url(#overallGradient)"
             dot={false}
             connectNulls
-            name={name}
+            name="Overall Average"
           />
-        ))}
-        <Area
-          type="monotone"
-          dataKey="Overall"
-          stroke="#a78bfa"
-          strokeWidth={2.5}
-          fill="url(#overallGradient)"
-          dot={false}
-          connectNulls
-          name="Overall Average"
-        />
-      </AreaChart>
-    </ResponsiveContainer>
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 

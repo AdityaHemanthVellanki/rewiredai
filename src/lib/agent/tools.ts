@@ -488,4 +488,84 @@ export const agentTools: ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "predict_semester_gpa",
+      description:
+        "Run a full semester GPA projection. For each course, projects the final grade based on current trajectory, grade trends, and upcoming assignment weights. Shows what-if scenarios: 'if you maintain current performance' vs 'if you improve by X%'. Returns projected semester GPA, per-course projections, and strategic recommendations.",
+      parameters: {
+        type: "object",
+        properties: {},
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "detect_grade_cliffs",
+      description:
+        "Detect grade cliff situations — where the student is close to a letter grade boundary and one assignment could push them over. For example: 'You're at 89.5% in Physics — if you get below 85% on the next exam, you drop from A- to B+.' Returns all courses where the student is within 3% of a grade boundary.",
+      parameters: {
+        type: "object",
+        properties: {},
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_study_effectiveness",
+      description:
+        "Analyze the student's study patterns and correlate them with grade outcomes. Identifies: which study times produce the best grades (morning vs evening), optimal session length, which courses need more study time, follow-through rate, and study-to-grade ROI per course. Use this when the student asks 'am I studying enough?' or 'how should I study?'.",
+      parameters: {
+        type: "object",
+        properties: {},
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "generate_weekly_strategy",
+      description:
+        "Generate a comprehensive weekly strategy that considers all courses, grade risks, deadlines, and optimal study distribution. Produces a week-level plan with daily themes (e.g., 'Monday: Physics focus day'), study hour targets per course weighted by risk, and specific action items. Much more strategic than daily planning.",
+      parameters: {
+        type: "object",
+        properties: {
+          week_start: {
+            type: "string",
+            description: "Start of the week (YYYY-MM-DD). Defaults to next Monday.",
+          },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_what_if",
+      description:
+        "Run a what-if grade scenario. 'What if I get X% on the final exam?' Shows exactly how a hypothetical score would change the student's course grade, letter grade, and semester GPA. Use when the student asks 'what do I need on the final?' or 'what if I bomb this exam?'.",
+      parameters: {
+        type: "object",
+        properties: {
+          course_id: { type: "string", description: "Course ID" },
+          assignment_title: {
+            type: "string",
+            description: "Name of the assignment (e.g., 'Final Exam', 'Midterm 2')",
+          },
+          hypothetical_score: {
+            type: "number",
+            description: "Hypothetical score as a percentage (e.g., 85 for 85%)",
+          },
+          assignment_weight: {
+            type: "number",
+            description: "What percentage of the total grade this assignment is worth (e.g., 30 for 30%)",
+          },
+        },
+        required: ["course_id", "hypothetical_score"],
+      },
+    },
+  },
 ];

@@ -19,7 +19,7 @@ import { NextResponse } from "next/server";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import type { Profile, CanvasSubmission } from "@/types";
 
-const MAX_TOOL_ITERATIONS = 8;
+const MAX_TOOL_ITERATIONS = 12;
 
 // GET — load chat history
 export async function GET() {
@@ -179,6 +179,13 @@ export async function POST(request: Request) {
                 parsedArgs = {};
               }
 
+              // Emit tool status so the UI can show live progress
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({ tool_status: { name: tc.function.name, status: "running" } })}\n\n`
+                )
+              );
+
               const result = await executeToolCall(
                 tc.function.name,
                 parsedArgs,
@@ -216,6 +223,13 @@ export async function POST(request: Request) {
                   });
                 }
               }
+
+              // Emit tool completion
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({ tool_status: { name: tc.function.name, status: "done" } })}\n\n`
+                )
+              );
 
               messages.push({
                 role: "tool",
@@ -308,6 +322,31 @@ function gpaTargetToPercent(gpa: number): number {
   if (gpa >= 1.3) return 67;
   if (gpa >= 1.0) return 60;
   return 50;
+}
+
+// Helper: convert percentage to GPA points (4.0 scale)
+function percentToGpaPoints(pct: number): number {
+  if (pct >= 93) return 4.0;
+  if (pct >= 90) return 3.7;
+  if (pct >= 87) return 3.3;
+  if (pct >= 83) return 3.0;
+  if (pct >= 80) return 2.7;
+  if (pct >= 77) return 2.3;
+  if (pct >= 73) return 2.0;
+  if (pct >= 70) return 1.7;
+  if (pct >= 67) return 1.3;
+  if (pct >= 60) return 1.0;
+  return 0.0;
+}
+
+// Helper: get next Monday date string
+function getNextMonday(): string {
+  const now = new Date();
+  const dayOfWeek = now.getDay();
+  const daysUntilMonday = dayOfWeek === 0 ? 1 : 8 - dayOfWeek;
+  const nextMon = new Date(now);
+  nextMon.setDate(now.getDate() + daysUntilMonday);
+  return nextMon.toISOString().split("T")[0];
 }
 
 // Helper: fetch Google Calendar events for a date range (with graceful fallback)
@@ -1711,6 +1750,509 @@ ${(planEmails || []).map((e: { subject: string; suggested_action: string | null 
       } catch {
         return { error: "Daily plan generation returned invalid data" };
       }
+    }
+
+    case "predict_semester_gpa": {
+      // Fetch all courses, grades, and assignments
+      const [
+        { data: gpaCoursesRaw },
+        { data: gpaGradesRaw },
+        { data: gpaAssignmentsRaw },
+        { data: gpaProfileRaw },
+      ] = await Promise.all([
+        supabase.from("courses").select("*").eq("user_id", userId),
+        supabase.from("grades").select("*, course:courses(name, code, color)").eq("user_id", userId),
+        supabase.from("assignments").select("*, course:courses(name)").eq("user_id", userId).neq("status", "completed").order("due_date"),
+        supabase.from("profiles").select("gpa_target").eq("id", userId).single(),
+      ]);
+
+      const gpaCourses = gpaCoursesRaw || [];
+      const gpaGrades = gpaGradesRaw || [];
+      const gpaAssignments = gpaAssignmentsRaw || [];
+
+      const projections: Array<{
+        course_name: string;
+        course_code: string | null;
+        current_average: number | null;
+        current_letter: string;
+        projected_final: number | null;
+        projected_letter: string;
+        trend: string;
+        remaining_assignments: number;
+        remaining_weight: number;
+        risk_level: string;
+        recommendation: string;
+      }> = [];
+
+      for (const course of gpaCourses) {
+        const cGrades = gpaGrades.filter((g: { course_id: string }) => g.course_id === course.id);
+        const valid = cGrades.filter((g: { score: number | null; max_score: number | null }) => g.score != null && g.max_score != null && (g.max_score as number) > 0);
+
+        let currentAvg: number | null = null;
+        if (valid.length > 0) {
+          const earned = valid.reduce((s: number, g: { score: number }) => s + g.score, 0);
+          const possible = valid.reduce((s: number, g: { max_score: number }) => s + g.max_score, 0);
+          currentAvg = (earned / possible) * 100;
+        }
+
+        // Trend analysis
+        let trend = "new";
+        if (valid.length >= 4) {
+          const sorted = [...valid].sort((a: { created_at: string }, b: { created_at: string }) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+          const recent3 = sorted.slice(0, 3);
+          const older3 = sorted.slice(-3);
+          const rAvg = recent3.reduce((s: number, g: { score: number; max_score: number }) => s + g.score / g.max_score, 0) / recent3.length;
+          const oAvg = older3.reduce((s: number, g: { score: number; max_score: number }) => s + g.score / g.max_score, 0) / older3.length;
+          trend = rAvg > oAvg + 0.03 ? "improving" : rAvg < oAvg - 0.03 ? "declining" : "stable";
+        } else if (valid.length > 0) {
+          trend = "stable";
+        }
+
+        // Remaining work
+        const remaining = gpaAssignments.filter((a: { course_id: string | null }) => a.course_id === course.id);
+        const remainingWeight = remaining.reduce((s: number, a: { weight: number | null }) => s + (a.weight || 0), 0);
+
+        // Project final grade based on trend
+        let projected = currentAvg;
+        if (currentAvg !== null && trend === "improving") {
+          projected = Math.min(currentAvg + 3, 100); // optimistic bump
+        } else if (currentAvg !== null && trend === "declining") {
+          projected = Math.max(currentAvg - 4, 0); // pessimistic adjustment
+        }
+
+        const risk = currentAvg === null ? "unknown"
+          : currentAvg < 60 ? "critical"
+          : currentAvg < 70 ? "at_risk"
+          : currentAvg < 80 ? "warning"
+          : "on_track";
+
+        const recommendation = risk === "critical"
+          ? "Immediate intervention needed. Schedule daily study sessions and visit office hours."
+          : risk === "at_risk"
+          ? "Increase study time significantly. Focus all available hours here."
+          : trend === "declining"
+          ? "Grades are trending down. Reverse the trend before it gets worse."
+          : risk === "warning"
+          ? "Below GPA target. Allocate extra study sessions."
+          : "Maintain current effort. Stay consistent.";
+
+        projections.push({
+          course_name: course.name,
+          course_code: course.code,
+          current_average: currentAvg !== null ? Math.round(currentAvg * 10) / 10 : null,
+          current_letter: currentAvg !== null ? getLetterGradeFromPercent(currentAvg) : "N/A",
+          projected_final: projected !== null ? Math.round(projected * 10) / 10 : null,
+          projected_letter: projected !== null ? getLetterGradeFromPercent(projected) : "N/A",
+          trend,
+          remaining_assignments: remaining.length,
+          remaining_weight: remainingWeight,
+          risk_level: risk,
+          recommendation,
+        });
+      }
+
+      // Calculate projected GPA
+      const withProjections = projections.filter((p) => p.projected_final !== null);
+      let projectedGpa: number | null = null;
+      if (withProjections.length > 0) {
+        const totalGpaPoints = withProjections.reduce((s, p) => s + percentToGpaPoints(p.projected_final!), 0);
+        projectedGpa = Math.round((totalGpaPoints / withProjections.length) * 100) / 100;
+      }
+
+      const currentGpa = withProjections.length > 0
+        ? Math.round((withProjections.filter((p) => p.current_average !== null).reduce((s, p) => s + percentToGpaPoints(p.current_average!), 0) / withProjections.filter((p) => p.current_average !== null).length) * 100) / 100
+        : null;
+
+      return {
+        current_gpa: currentGpa,
+        projected_gpa: projectedGpa,
+        gpa_target: gpaProfileRaw?.gpa_target || null,
+        on_track_for_target: projectedGpa !== null && gpaProfileRaw?.gpa_target ? projectedGpa >= gpaProfileRaw.gpa_target : null,
+        courses: projections,
+        courses_at_risk: projections.filter((p) => p.risk_level === "at_risk" || p.risk_level === "critical").length,
+        courses_declining: projections.filter((p) => p.trend === "declining").length,
+      };
+    }
+
+    case "detect_grade_cliffs": {
+      const { data: cliffGrades } = await supabase
+        .from("grades")
+        .select("*, course:courses(name, code)")
+        .eq("user_id", userId);
+
+      const { data: cliffCourses } = await supabase
+        .from("courses")
+        .select("*")
+        .eq("user_id", userId);
+
+      // Grade boundaries
+      const boundaries = [
+        { letter: "A", min: 93 },
+        { letter: "A-", min: 90 },
+        { letter: "B+", min: 87 },
+        { letter: "B", min: 83 },
+        { letter: "B-", min: 80 },
+        { letter: "C+", min: 77 },
+        { letter: "C", min: 73 },
+        { letter: "C-", min: 70 },
+        { letter: "D+", min: 67 },
+        { letter: "D", min: 60 },
+      ];
+
+      const cliffs: Array<{
+        course_name: string;
+        current_average: number;
+        current_letter: string;
+        nearest_boundary: number;
+        grade_below: string;
+        margin: number;
+        risk: string;
+        message: string;
+      }> = [];
+
+      for (const course of cliffCourses || []) {
+        const cGrades = (cliffGrades || []).filter((g: { course_id: string }) => g.course_id === course.id);
+        const valid = cGrades.filter((g: { score: number | null; max_score: number | null }) => g.score != null && g.max_score != null && (g.max_score as number) > 0);
+        if (valid.length === 0) continue;
+
+        const earned = valid.reduce((s: number, g: { score: number }) => s + g.score, 0);
+        const possible = valid.reduce((s: number, g: { max_score: number }) => s + g.max_score, 0);
+        const avg = (earned / possible) * 100;
+        const currentLetter = getLetterGradeFromPercent(avg);
+
+        // Find nearest boundary below current average
+        for (const boundary of boundaries) {
+          const margin = avg - boundary.min;
+          if (margin >= 0 && margin <= 3) {
+            const belowIdx = boundaries.indexOf(boundary) + 1;
+            const gradeBelow = belowIdx < boundaries.length ? boundaries[belowIdx].letter : "F";
+
+            cliffs.push({
+              course_name: course.name,
+              current_average: Math.round(avg * 10) / 10,
+              current_letter: currentLetter,
+              nearest_boundary: boundary.min,
+              grade_below: gradeBelow,
+              margin: Math.round(margin * 10) / 10,
+              risk: margin <= 1 ? "critical" : margin <= 2 ? "high" : "moderate",
+              message: `${course.name}: ${avg.toFixed(1)}% (${currentLetter}) — only ${margin.toFixed(1)}% above ${gradeBelow}. One bad grade could drop you.`,
+            });
+            break;
+          }
+        }
+      }
+
+      return {
+        cliffs: cliffs.sort((a, b) => a.margin - b.margin),
+        total_cliff_courses: cliffs.length,
+        critical_count: cliffs.filter((c) => c.risk === "critical").length,
+        summary: cliffs.length === 0
+          ? "No grade cliffs detected. You have comfortable margins in all courses."
+          : `${cliffs.length} course${cliffs.length > 1 ? "s" : ""} near a grade boundary. ${cliffs.filter((c) => c.risk === "critical").length} critical.`,
+      };
+    }
+
+    case "get_study_effectiveness": {
+      // Fetch study blocks from last 30 days with course info
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      const [
+        { data: effBlocks },
+        { data: effGrades },
+        { data: effCourses },
+      ] = await Promise.all([
+        supabase.from("study_blocks").select("*, course:courses(name)").eq("user_id", userId).gte("start_time", thirtyDaysAgo),
+        supabase.from("grades").select("*, course:courses(name)").eq("user_id", userId).gte("created_at", thirtyDaysAgo),
+        supabase.from("courses").select("*").eq("user_id", userId),
+      ]);
+
+      const blocks = effBlocks || [];
+      const grades = effGrades || [];
+
+      // Time-of-day analysis
+      const timeSlots = { morning: { hours: 0, blocks: 0 }, afternoon: { hours: 0, blocks: 0 }, evening: { hours: 0, blocks: 0 }, night: { hours: 0, blocks: 0 } };
+      const completedBlocksList = blocks.filter((b: { status: string }) => b.status === "completed");
+      const skippedBlocksList = blocks.filter((b: { status: string }) => b.status === "skipped");
+
+      for (const b of completedBlocksList) {
+        const startHour = new Date(b.start_time).getHours();
+        const duration = (new Date(b.end_time).getTime() - new Date(b.start_time).getTime()) / 3600000;
+        const slot = startHour < 12 ? "morning" : startHour < 17 ? "afternoon" : startHour < 21 ? "evening" : "night";
+        timeSlots[slot].hours += duration;
+        timeSlots[slot].blocks += 1;
+      }
+
+      // Session length analysis
+      const sessionLengths = completedBlocksList.map((b: { start_time: string; end_time: string }) =>
+        (new Date(b.end_time).getTime() - new Date(b.start_time).getTime()) / 60000
+      );
+      const avgSessionMin = sessionLengths.length > 0 ? sessionLengths.reduce((a: number, b: number) => a + b, 0) / sessionLengths.length : 0;
+
+      // Per-course study vs grade correlation
+      const courseEffectiveness: Array<{
+        course_name: string;
+        study_hours: number;
+        grade_average: number | null;
+        study_to_grade_ratio: string;
+        recommendation: string;
+      }> = [];
+
+      for (const course of effCourses || []) {
+        const courseBlocks = completedBlocksList.filter((b: { course_id: string | null }) => b.course_id === course.id);
+        const courseHours = courseBlocks.reduce((s: number, b: { start_time: string; end_time: string }) => {
+          return s + (new Date(b.end_time).getTime() - new Date(b.start_time).getTime()) / 3600000;
+        }, 0);
+
+        const courseGrades = grades.filter((g: { course_id: string; score: number | null; max_score: number | null }) => g.course_id === course.id && g.score != null && g.max_score != null && (g.max_score as number) > 0);
+        let gradeAvg: number | null = null;
+        if (courseGrades.length > 0) {
+          const e = courseGrades.reduce((s: number, g: { score: number }) => s + g.score, 0);
+          const p = courseGrades.reduce((s: number, g: { max_score: number }) => s + g.max_score, 0);
+          gradeAvg = (e / p) * 100;
+        }
+
+        const ratio = gradeAvg !== null && courseHours > 0
+          ? gradeAvg >= 90 && courseHours < 5 ? "efficient"
+          : gradeAvg < 70 && courseHours < 3 ? "under-invested"
+          : gradeAvg < 70 && courseHours >= 5 ? "struggling"
+          : "balanced"
+          : "unknown";
+
+        const rec = ratio === "under-invested"
+          ? `Significantly increase study time. Only ${courseHours.toFixed(1)}h for a ${gradeAvg?.toFixed(0)}% grade.`
+          : ratio === "struggling"
+          ? "Study time isn't translating to results. Try different methods: practice problems, office hours, study groups."
+          : ratio === "efficient"
+          ? "Great ROI. Maintain current approach."
+          : "Continue current pace.";
+
+        courseEffectiveness.push({
+          course_name: course.name,
+          study_hours: Math.round(courseHours * 10) / 10,
+          grade_average: gradeAvg !== null ? Math.round(gradeAvg * 10) / 10 : null,
+          study_to_grade_ratio: ratio,
+          recommendation: rec,
+        });
+      }
+
+      // Best study time
+      const bestTime = Object.entries(timeSlots).sort((a, b) => b[1].hours - a[1].hours)[0];
+
+      return {
+        total_study_hours_30d: Math.round(completedBlocksList.reduce((s: number, b: { start_time: string; end_time: string }) => s + (new Date(b.end_time).getTime() - new Date(b.start_time).getTime()) / 3600000, 0) * 10) / 10,
+        total_sessions_30d: completedBlocksList.length,
+        skipped_sessions_30d: skippedBlocksList.length,
+        follow_through_rate: completedBlocksList.length + skippedBlocksList.length > 0
+          ? Math.round((completedBlocksList.length / (completedBlocksList.length + skippedBlocksList.length)) * 100)
+          : 0,
+        avg_session_minutes: Math.round(avgSessionMin),
+        best_study_time: bestTime[0],
+        time_distribution: Object.fromEntries(Object.entries(timeSlots).map(([k, v]) => [k, { hours: Math.round(v.hours * 10) / 10, sessions: v.blocks }])),
+        course_effectiveness: courseEffectiveness,
+        optimal_session_length: avgSessionMin > 90 ? "Your sessions average over 90 min — try splitting into 45-60 min focused blocks with breaks." : avgSessionMin < 25 ? "Sessions are very short — try extending to 45 min for better deep focus." : "Good session length.",
+      };
+    }
+
+    case "generate_weekly_strategy": {
+      const weekStart = args.week_start || getNextMonday();
+
+      const [
+        { data: stratAssignments },
+        { data: stratGrades },
+        { data: stratCourses },
+        { data: stratProfile },
+        { data: stratBlocks },
+      ] = await Promise.all([
+        supabase.from("assignments").select("*, course:courses(name, code, color)").eq("user_id", userId).neq("status", "completed").order("due_date"),
+        supabase.from("grades").select("*, course:courses(name)").eq("user_id", userId).order("created_at", { ascending: false }),
+        supabase.from("courses").select("*").eq("user_id", userId),
+        supabase.from("profiles").select("*").eq("id", userId).single(),
+        supabase.from("study_blocks").select("*").eq("user_id", userId).gte("start_time", new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString()),
+      ]);
+
+      // Build course health for AI context
+      const stratCourseHealth: Array<{ name: string; avg: number; trend: string; risk: string; studyHours: number }> = [];
+      for (const c of stratCourses || []) {
+        const cg = (stratGrades || []).filter((g: { course_id: string }) => g.course_id === c.id);
+        const valid = cg.filter((g: { score: number | null; max_score: number | null }) => g.score != null && g.max_score != null && (g.max_score as number) > 0);
+        let avg = 0;
+        if (valid.length > 0) {
+          const e = valid.reduce((s: number, g: { score: number }) => s + g.score, 0);
+          const p = valid.reduce((s: number, g: { max_score: number }) => s + g.max_score, 0);
+          avg = (e / p) * 100;
+        }
+        const courseBlocks = (stratBlocks || []).filter((b: { course_id: string | null; status: string }) => b.course_id === c.id && b.status === "completed");
+        const studyH = courseBlocks.reduce((s: number, b: { start_time: string; end_time: string }) => s + (new Date(b.end_time).getTime() - new Date(b.start_time).getTime()) / 3600000, 0);
+        const risk = avg < 60 ? "critical" : avg < 70 ? "at_risk" : avg < 80 ? "warning" : "on_track";
+        stratCourseHealth.push({ name: c.name, avg: Math.round(avg * 10) / 10, trend: "stable", risk, studyHours: Math.round(studyH * 10) / 10 });
+      }
+
+      // Get Google Calendar events for the week
+      let weekCalEvents: Array<{ summary: string; start: string; end: string; day: string }> = [];
+      const gToken = await getGoogleAccessToken(userId);
+      if (gToken) {
+        try {
+          const weekEnd = new Date(weekStart);
+          weekEnd.setDate(weekEnd.getDate() + 6);
+          const events = await fetchCalendarEvents(gToken, `${weekStart}T00:00:00Z`, `${weekEnd.toISOString().split("T")[0]}T23:59:59Z`);
+          weekCalEvents = events.map((e: { summary?: string; start?: { dateTime?: string }; end?: { dateTime?: string } }) => {
+            const startDt = e.start?.dateTime || "";
+            return {
+              summary: e.summary || "Untitled",
+              start: startDt,
+              end: e.end?.dateTime || "",
+              day: startDt ? new Date(startDt).toLocaleDateString("en-US", { weekday: "long" }) : "",
+            };
+          });
+        } catch { /* calendar unavailable */ }
+      }
+
+      const stratClient = getAzureOpenAI();
+      const stratResponse = await stratClient.chat.completions.create({
+        model: process.env.AZURE_OPENAI_DEPLOYMENT || "gpt-4o",
+        messages: [
+          {
+            role: "system",
+            content: `You are a strategic academic advisor. Generate a comprehensive weekly study strategy as JSON.
+
+PRINCIPLES:
+- Courses with lower grades get MORE study time (inverse allocation)
+- Critical/at-risk courses get 2-3x more hours than on-track courses
+- Space study sessions across the week (no cramming)
+- Account for classes/meetings shown in the calendar
+- Assign daily themes when possible ("Monday: Physics deep dive")
+- Include specific, actionable items — not vague advice
+- If study hours invested are low compared to poor grades, flag it
+
+Return JSON:
+{
+  "weekly_theme": "One sentence strategic focus for the week",
+  "total_recommended_hours": number,
+  "daily_plan": [
+    {
+      "day": "Monday",
+      "date": "YYYY-MM-DD",
+      "theme": "string",
+      "study_hours_target": number,
+      "priority_items": [
+        {
+          "title": "string",
+          "course": "string or null",
+          "duration_minutes": number,
+          "priority": "critical|high|medium",
+          "reason": "string"
+        }
+      ]
+    }
+  ],
+  "course_hour_allocation": [
+    { "course": "string", "recommended_hours": number, "current_grade": "string", "rationale": "string" }
+  ],
+  "strategic_actions": ["string array of 3-5 high-impact actions for the week"],
+  "risk_mitigation": ["string array of specific actions for at-risk courses"]
+}`,
+          },
+          {
+            role: "user",
+            content: `Week starting: ${weekStart}
+Student: ${stratProfile?.full_name}
+GPA Target: ${stratProfile?.gpa_target || "Not set"}
+Peak Hours: ${(stratProfile?.productivity_peak_hours || []).join(", ") || "9:00-12:00, 14:00-17:00"}
+Sleep: ${stratProfile?.sleep_window?.sleep || "23:00"} - ${stratProfile?.sleep_window?.wake || "08:00"}
+
+COURSE HEALTH:
+${stratCourseHealth.map((c) => `- ${c.name}: ${c.avg}% (${c.risk}) — ${c.studyHours}h studied recently`).join("\n")}
+
+DEADLINES THIS WEEK & BEYOND:
+${(stratAssignments || []).slice(0, 15).map((a: { title: string; due_date: string; weight: number | null; course?: { name?: string } }) => `- ${a.title} due ${a.due_date}${a.weight ? ` (${a.weight} pts)` : ""} — ${a.course?.name || "General"}`).join("\n") || "None"}
+
+CALENDAR EVENTS THIS WEEK:
+${weekCalEvents.map((e) => `- ${e.day}: ${e.summary} (${e.start} - ${e.end})`).join("\n") || "No events"}`,
+          },
+        ],
+        response_format: { type: "json_object" },
+        temperature: 0.3,
+      });
+
+      const stratContent = stratResponse.choices[0]?.message?.content;
+      if (!stratContent) return { error: "Failed to generate weekly strategy" };
+
+      try {
+        return { week_start: weekStart, ...JSON.parse(stratContent), course_health: stratCourseHealth };
+      } catch {
+        return { error: "Weekly strategy generation returned invalid data" };
+      }
+    }
+
+    case "run_what_if": {
+      if (!args.course_id || args.hypothetical_score == null) {
+        return { error: "course_id and hypothetical_score are required" };
+      }
+
+      const [
+        { data: wifCourse },
+        { data: wifGrades },
+      ] = await Promise.all([
+        supabase.from("courses").select("*").eq("id", args.course_id).eq("user_id", userId).single(),
+        supabase.from("grades").select("*").eq("user_id", userId).eq("course_id", args.course_id),
+      ]);
+
+      if (!wifCourse) return { error: "Course not found" };
+
+      const validGrades = (wifGrades || []).filter((g: { score: number | null; max_score: number | null }) => g.score != null && g.max_score != null && (g.max_score as number) > 0);
+
+      let currentEarned = 0;
+      let currentPossible = 0;
+      for (const g of validGrades) {
+        currentEarned += (g as { score: number }).score;
+        currentPossible += (g as { max_score: number }).max_score;
+      }
+
+      const currentAvg = currentPossible > 0 ? (currentEarned / currentPossible) * 100 : null;
+      const currentLetter = currentAvg !== null ? getLetterGradeFromPercent(currentAvg) : "N/A";
+
+      // Simulate adding the hypothetical score
+      const hypoWeight = args.assignment_weight || 100; // default to 100-point assignment
+      const hypoScore = (args.hypothetical_score / 100) * hypoWeight;
+      const newEarned = currentEarned + hypoScore;
+      const newPossible = currentPossible + hypoWeight;
+      const newAvg = (newEarned / newPossible) * 100;
+      const newLetter = getLetterGradeFromPercent(newAvg);
+
+      const letterChanged = currentLetter !== newLetter;
+      const gpaImpact = currentAvg !== null ? percentToGpaPoints(newAvg) - percentToGpaPoints(currentAvg) : 0;
+
+      // Calculate what they'd need for key letter grades
+      const targets: Record<string, { needed: number; achievable: boolean }> = {};
+      for (const [letter, minPct] of [["A", 93], ["A-", 90], ["B+", 87], ["B", 83], ["B-", 80], ["C", 73]] as [string, number][]) {
+        const needed = ((minPct / 100) * newPossible - currentEarned) / hypoWeight * 100;
+        targets[letter] = {
+          needed: Math.round(needed * 10) / 10,
+          achievable: needed <= 100 && needed >= 0,
+        };
+      }
+
+      return {
+        course: wifCourse.name,
+        assignment: args.assignment_title || "Hypothetical assignment",
+        hypothetical_score: args.hypothetical_score,
+        before: {
+          average: currentAvg !== null ? Math.round(currentAvg * 10) / 10 : null,
+          letter_grade: currentLetter,
+        },
+        after: {
+          average: Math.round(newAvg * 10) / 10,
+          letter_grade: newLetter,
+        },
+        impact: {
+          letter_grade_changed: letterChanged,
+          direction: newAvg > (currentAvg || 0) ? "up" : newAvg < (currentAvg || 0) ? "down" : "same",
+          gpa_points_change: Math.round(gpaImpact * 100) / 100,
+          message: letterChanged
+            ? `This would ${newAvg > (currentAvg || 0) ? "raise" : "drop"} you from ${currentLetter} to ${newLetter}.`
+            : `You'd stay at ${newLetter} (${Math.round(newAvg * 10) / 10}%).`,
+        },
+        targets_from_here: targets,
+      };
     }
 
     default:

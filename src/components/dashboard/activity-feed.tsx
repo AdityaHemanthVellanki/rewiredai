@@ -6,7 +6,6 @@ import {
   Mail,
   AlertTriangle,
   CheckCircle2,
-  MessageSquare,
   Zap,
   ChevronRight,
 } from "lucide-react";
@@ -37,16 +36,23 @@ export function ActivityFeed({ items }: ActivityFeedProps) {
 
   return (
     <div className="space-y-2">
-      {items.map((item) => {
+      {items.map((item, index) => {
         const config = getItemConfig(item);
+        const isRecent = isWithinHour(item.timestamp);
 
         return (
           <div
             key={item.id}
-            className={`flex items-start gap-3 rounded-lg border p-3 transition-all hover:bg-white/[0.02] ${config.border} ${config.bg}`}
+            className={`animate-slide-in-right group flex items-start gap-3 rounded-lg border p-3 transition-all duration-200 hover-lift ${config.border} ${config.bg}`}
+            style={{
+              ["--stagger-delay" as string]: `${index * 0.06}s`,
+            }}
           >
-            <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${config.iconBg}`}>
+            <div className={`relative flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${config.iconBg} transition-transform duration-200 group-hover:scale-110`}>
               {config.icon}
+              {isRecent && (
+                <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-purple-400 animate-status-dot" />
+              )}
             </div>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
@@ -61,7 +67,7 @@ export function ActivityFeed({ items }: ActivityFeedProps) {
             </div>
             {item.actionUrl && (
               <a href={item.actionUrl} className="mt-1 shrink-0">
-                <ChevronRight className="h-4 w-4 text-muted-foreground/30" />
+                <ChevronRight className="h-4 w-4 text-muted-foreground/30 transition-transform group-hover:translate-x-0.5" />
               </a>
             )}
           </div>
@@ -69,6 +75,12 @@ export function ActivityFeed({ items }: ActivityFeedProps) {
       })}
     </div>
   );
+}
+
+function isWithinHour(dateStr: string): boolean {
+  const now = new Date();
+  const date = new Date(dateStr);
+  return now.getTime() - date.getTime() < 3600000;
 }
 
 function getItemConfig(item: FeedItem) {

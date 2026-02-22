@@ -38,23 +38,23 @@ export function DeadlinePipeline({ deadlines }: DeadlinePipelineProps) {
         return (
           <div
             key={deadline.id}
-            className={`group relative flex items-center gap-3 rounded-lg border p-3 transition-all hover:scale-[1.005] ${urgencyConfig.border} ${urgencyConfig.bg}`}
+            className={`animate-slide-in-right group relative flex items-center gap-3 rounded-lg border p-3 transition-all duration-200 hover-lift ${urgencyConfig.border} ${urgencyConfig.bg}`}
+            style={{
+              ["--stagger-delay" as string]: `${index * 0.06}s`,
+            }}
           >
-            {/* Timeline connector */}
             {index < deadlines.length - 1 && (
-              <div className="absolute bottom-0 left-[22px] top-full h-2 w-px bg-border/30" />
+              <div className="absolute bottom-0 left-[22px] top-full h-2 w-px bg-gradient-to-b from-border/30 to-transparent" />
             )}
 
-            {/* Status icon */}
-            <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${urgencyConfig.iconBg}`}>
+            <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${urgencyConfig.iconBg} transition-transform duration-200 group-hover:scale-110`}>
               {urgencyConfig.icon}
             </div>
 
-            {/* Content */}
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <div
-                  className="h-2 w-2 shrink-0 rounded-full"
+                  className="h-2 w-2 shrink-0 rounded-full transition-transform duration-200 group-hover:scale-125"
                   style={{ backgroundColor: deadline.courseColor }}
                 />
                 <span className="truncate text-sm font-medium">{deadline.title}</span>
@@ -69,9 +69,8 @@ export function DeadlinePipeline({ deadlines }: DeadlinePipelineProps) {
               </div>
             </div>
 
-            {/* Time remaining */}
             <div className={`shrink-0 text-right ${urgencyConfig.textColor}`}>
-              <div className="text-sm font-semibold">
+              <div className={`text-sm font-semibold ${deadline.isOverdue ? "animate-overdue-pulse" : ""}`}>
                 {deadline.isOverdue ? (
                   "OVERDUE"
                 ) : deadline.hoursLeft < 1 ? (

@@ -1,54 +1,12 @@
 "use client";
 
-import { useEffect, useRef } from "react";
 import Link from "next/link";
-import {
-  motion,
-  useInView,
-  useMotionValue,
-  useSpring,
-} from "motion/react";
+import { motion } from "motion/react";
 import { ArrowRight, Sparkles, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-function AnimatedCounter({
-  value,
-  suffix = "",
-}: {
-  value: number;
-  suffix?: string;
-}) {
-  const ref = useRef<HTMLSpanElement>(null);
-  const inView = useInView(ref, { once: true });
-  const motionValue = useMotionValue(0);
-  const spring = useSpring(motionValue, { stiffness: 50, damping: 20 });
-
-  useEffect(() => {
-    if (inView) {
-      motionValue.set(value);
-    }
-  }, [inView, value, motionValue]);
-
-  useEffect(() => {
-    const unsubscribe = spring.on("change", (v) => {
-      if (ref.current) {
-        ref.current.textContent = Math.round(v).toLocaleString() + suffix;
-      }
-    });
-    return unsubscribe;
-  }, [spring, suffix]);
-
-  return <span ref={ref}>0{suffix}</span>;
-}
-
 const heroWords = ["Stop", "managing."];
 const gradientWords = ["Start", "living."];
-
-const stats = [
-  { value: 2500, suffix: "+", label: "Students" },
-  { value: 50000, suffix: "+", label: "Deadlines Tracked" },
-  { value: 98, suffix: "%", label: "On-Time Rate" },
-];
 
 export function Hero() {
   return (
@@ -161,24 +119,6 @@ export function Hero() {
           No credit card required. Built for students who are trying their best.
         </motion.p>
 
-        {/* Stats bar */}
-        <motion.div
-          initial={{ opacity: 0, y: 30 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8, delay: 1.4 }}
-          className="mt-16 flex flex-wrap items-center justify-center gap-8 sm:gap-16"
-        >
-          {stats.map((stat) => (
-            <div key={stat.label} className="text-center">
-              <div className="text-2xl font-bold text-foreground sm:text-3xl">
-                <AnimatedCounter value={stat.value} suffix={stat.suffix} />
-              </div>
-              <div className="mt-1 text-xs uppercase tracking-wider text-muted-foreground">
-                {stat.label}
-              </div>
-            </div>
-          ))}
-        </motion.div>
       </div>
 
       {/* Scroll indicator */}
