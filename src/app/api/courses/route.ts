@@ -1,5 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { NextResponse } from "next/server";
+import { dualWriteCreate, dualWriteClose } from "@/lib/solana/dual-write";
+import { DataType } from "@/lib/solana/constants";
 
 export async function GET() {
   const supabase = await createClient();
@@ -54,6 +56,25 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
+  // Dual-write to Solana (fire-and-forget)
+  if (course) {
+    const { id, user_id, solana_index, ...onChainData } = course;
+    // Get next index from count of existing records
+    const { count } = await supabase
+      .from("courses")
+      .select("*", { count: "exact", head: true })
+      .eq("user_id", user.id)
+      .not("solana_index", "is", null);
+    const nextIndex = count ?? 0;
+    dualWriteCreate(user.id, DataType.Course, nextIndex, onChainData)
+      .then((result) => {
+        if (result) {
+          supabase.from("courses").update({ solana_index: result.index }).eq("id", id).then(() => {});
+        }
+      })
+      .catch(console.error);
+  }
+
   return NextResponse.json({ course });
 }
 
@@ -74,6 +95,14 @@ export async function DELETE(request: Request) {
     return NextResponse.json({ error: "Missing course ID" }, { status: 400 });
   }
 
+  // Get solana_index before deleting
+  const { data: courseToDelete } = await supabase
+    .from("courses")
+    .select("solana_index")
+    .eq("id", id)
+    .eq("user_id", user.id)
+    .single();
+
   const { error } = await supabase
     .from("courses")
     .delete()
@@ -82,6 +111,11 @@ export async function DELETE(request: Request) {
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  // Close on-chain record
+  if (courseToDelete?.solana_index != null) {
+    dualWriteClose(user.id, DataType.Course, courseToDelete.solana_index).catch(console.error);
   }
 
   return NextResponse.json({ success: true });

@@ -1,5 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { NextResponse } from "next/server";
+import { dualWriteCreate } from "@/lib/solana/dual-write";
+import { DataType } from "@/lib/solana/constants";
 
 export async function GET(request: Request) {
   const supabase = await createClient();
@@ -60,6 +62,24 @@ export async function POST(request: Request) {
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  // Dual-write to Solana
+  if (grade) {
+    const { id, user_id, solana_index, course, ...onChainData } = grade;
+    const { count } = await supabase
+      .from("grades")
+      .select("*", { count: "exact", head: true })
+      .eq("user_id", user.id)
+      .not("solana_index", "is", null);
+    const nextIndex = count ?? 0;
+    dualWriteCreate(user.id, DataType.Grade, nextIndex, onChainData)
+      .then((result) => {
+        if (result) {
+          supabase.from("grades").update({ solana_index: result.index }).eq("id", id).then(() => {});
+        }
+      })
+      .catch(console.error);
   }
 
   return NextResponse.json({ grade });

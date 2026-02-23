@@ -9,9 +9,9 @@ import {
   BookOpen,
   Calendar,
   Settings,
-  Zap,
   Menu,
 } from "lucide-react";
+import { Logo } from "@/components/logo";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -33,7 +33,7 @@ export function MobileNav() {
     <div className="flex h-16 items-center justify-between border-b border-border/50 bg-card/50 px-4 backdrop-blur-xl md:hidden">
       <div className="flex items-center gap-2">
         <div className="animate-glow-pulse rounded-lg p-0.5">
-          <Zap className="h-6 w-6 text-purple-500" />
+          <Logo size={24} />
         </div>
         <span className="text-lg font-bold">Rewired</span>
       </div>
@@ -46,7 +46,7 @@ export function MobileNav() {
         <SheetContent side="left" className="w-64 p-4">
           <div className="mb-6 flex items-center gap-2">
             <div className="animate-glow-pulse rounded-lg p-0.5">
-              <Zap className="h-6 w-6 text-purple-500" />
+              <Logo size={24} />
             </div>
             <span className="text-lg font-bold">Rewired</span>
           </div>

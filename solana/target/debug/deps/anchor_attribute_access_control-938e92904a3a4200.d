@@ -1,0 +1,5 @@
+/Users/aditya/Desktop/rewiredai/rewiredai/solana/target/debug/deps/anchor_attribute_access_control-938e92904a3a4200.d: /Users/aditya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anchor-attribute-access-control-0.31.1/src/lib.rs
+
+/Users/aditya/Desktop/rewiredai/rewiredai/solana/target/debug/deps/libanchor_attribute_access_control-938e92904a3a4200.dylib: /Users/aditya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anchor-attribute-access-control-0.31.1/src/lib.rs
+
+/Users/aditya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anchor-attribute-access-control-0.31.1/src/lib.rs:

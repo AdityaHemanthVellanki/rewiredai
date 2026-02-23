@@ -1,0 +1,472 @@
+{
+  "address": "6KK7zhdAuZdnom1hAEGEL4iwg66HxsKhhGXaKwDywzmU",
+  "metadata": {
+    "name": "rewired",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Rewired AI — On-chain student academic records"
+  },
+  "instructions": [
+    {
+      "name": "close_record",
+      "docs": [
+        "Close a data record and reclaim the rent SOL."
+      ],
+      "discriminator": [
+        111,
+        192,
+        122,
+        188,
+        38,
+        234,
+        242,
+        249
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "record",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "_data_type",
+          "type": "u8"
+        },
+        {
+          "name": "_index",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "create_record",
+      "docs": [
+        "Create a new data record of the given type.",
+        "The `index` must match the current counter for that type (prevents gaps)."
+      ],
+      "discriminator": [
+        116,
+        124,
+        63,
+        58,
+        126,
+        204,
+        178,
+        10
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "student",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  117,
+                  100,
+                  101,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "student.owner",
+                "account": "StudentProfile"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "data_type",
+          "type": "u8"
+        },
+        {
+          "name": "index",
+          "type": "u32"
+        },
+        {
+          "name": "data",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "initialize_student",
+      "docs": [
+        "Create a new on-chain student profile.",
+        "Called once when the user first links their wallet."
+      ],
+      "discriminator": [
+        112,
+        55,
+        47,
+        7,
+        217,
+        128,
+        228,
+        180
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "student",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  117,
+                  100,
+                  101,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "owner"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "owner",
+          "type": "pubkey"
+        },
+        {
+          "name": "full_name",
+          "type": "string"
+        },
+        {
+          "name": "email",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "update_record",
+      "docs": [
+        "Update the JSON data of an existing record."
+      ],
+      "discriminator": [
+        54,
+        194,
+        108,
+        162,
+        199,
+        12,
+        5,
+        60
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "signer": true
+        },
+        {
+          "name": "record",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "_data_type",
+          "type": "u8"
+        },
+        {
+          "name": "_index",
+          "type": "u32"
+        },
+        {
+          "name": "data",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "update_student",
+      "docs": [
+        "Update the student profile fields."
+      ],
+      "discriminator": [
+        208,
+        104,
+        170,
+        157,
+        94,
+        249,
+        7,
+        125
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "signer": true
+        },
+        {
+          "name": "student",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  117,
+                  100,
+                  101,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "student.owner",
+                "account": "StudentProfile"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "full_name",
+          "type": {
+            "option": "string"
+          }
+        },
+        {
+          "name": "email",
+          "type": {
+            "option": "string"
+          }
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "DataRecord",
+      "discriminator": [
+        51,
+        30,
+        73,
+        146,
+        52,
+        76,
+        80,
+        152
+      ]
+    },
+    {
+      "name": "StudentProfile",
+      "discriminator": [
+        185,
+        172,
+        160,
+        26,
+        178,
+        113,
+        216,
+        235
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "StringTooLong",
+      "msg": "String exceeds maximum allowed length"
+    },
+    {
+      "code": 6001,
+      "name": "DataTooLong",
+      "msg": "Data blob exceeds maximum allowed length (4096 bytes)"
+    },
+    {
+      "code": 6002,
+      "name": "InvalidDataType",
+      "msg": "Invalid data type (must be 0-9)"
+    },
+    {
+      "code": 6003,
+      "name": "InvalidIndex",
+      "msg": "Record index does not match the expected counter value"
+    },
+    {
+      "code": 6004,
+      "name": "Unauthorized",
+      "msg": "Unauthorized operation"
+    }
+  ],
+  "types": [
+    {
+      "name": "DataRecord",
+      "docs": [
+        "Generic data record — stores any data type as a JSON string.",
+        "PDA seeds: [data_type_byte, owner_pubkey, index_le_bytes]"
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "docs": [
+              "The user's wallet public key (matches StudentProfile.owner)"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "data_type",
+            "docs": [
+              "Data type identifier (0-9, see constants.rs)"
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "index",
+            "docs": [
+              "Sequential index within this data type for this user"
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "data",
+            "docs": [
+              "JSON-serialized data blob (max 4096 bytes)"
+            ],
+            "type": "string"
+          },
+          {
+            "name": "created_at",
+            "docs": [
+              "Unix timestamp of record creation"
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "updated_at",
+            "docs": [
+              "Unix timestamp of last update"
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "docs": [
+              "PDA bump seed"
+            ],
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "StudentProfile",
+      "docs": [
+        "Student profile — one per wallet address.",
+        "Stores identity info and per-type counters used to derive record PDAs."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "docs": [
+              "The user's wallet public key (used in PDA seeds)"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "full_name",
+            "docs": [
+              "Display name"
+            ],
+            "type": "string"
+          },
+          {
+            "name": "email",
+            "docs": [
+              "Email address"
+            ],
+            "type": "string"
+          },
+          {
+            "name": "counters",
+            "docs": [
+              "Per-data-type counters: [course, assignment, grade, study_block,",
+              "chat, email, nudge, mood, memory, activity]",
+              "Each counter is incremented when a new record of that type is created."
+            ],
+            "type": {
+              "array": [
+                "u32",
+                10
+              ]
+            }
+          },
+          {
+            "name": "created_at",
+            "docs": [
+              "Unix timestamp of profile creation"
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "updated_at",
+            "docs": [
+              "Unix timestamp of last update"
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "docs": [
+              "PDA bump seed"
+            ],
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ]
+}

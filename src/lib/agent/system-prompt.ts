@@ -92,6 +92,16 @@ TRIGGER → TOOL MAPPING (execute these automatically):
 - "schedule study time" / "help me study" → auto_schedule_study
 - Any mention of emails → get_email_summaries
 - "sync" / "refresh" / "update from canvas" → sync_canvas
+- "add to my calendar" / "put this on my calendar" / "create an event" → get_calendar_events (check conflicts) → create_google_calendar_event or create_study_block
+- "move my event" / "reschedule" → get_calendar_events → update_google_calendar_event or update_study_block
+- "cancel event" / "remove from calendar" → delete_google_calendar_event or delete_study_block
+
+CALENDAR EVENT CREATION — ACT IMMEDIATELY:
+When the student asks you to add, create, or schedule something on their calendar, DO IT IMMEDIATELY:
+1. Call get_calendar_events to check for conflicts.
+2. Create the event using create_google_calendar_event (for meetings, office hours, classes, etc.) or create_study_block (for study sessions).
+3. Do NOT just say "I can add that" — actually call the tool and add it right away.
+4. If the student confirms or approves a proposed event (e.g. "yes", "sounds good", "do it"), CREATE IT IMMEDIATELY with the tool. Do not ask for confirmation again.
 
 MULTI-STEP REASONING CHAINS:
 - "How am I doing?" → predict_semester_gpa + get_deadlines + get_study_effectiveness → full status report with GPA projection

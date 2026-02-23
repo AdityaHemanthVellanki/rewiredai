@@ -1,5 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { NextResponse } from "next/server";
+import { dualWriteCreate, dualWriteUpdate } from "@/lib/solana/dual-write";
+import { DataType } from "@/lib/solana/constants";
 
 export async function GET(request: Request) {
   const supabase = await createClient();
@@ -71,6 +73,24 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
+  // Dual-write to Solana (fire-and-forget)
+  if (assignment) {
+    const { id, user_id, solana_index, course, ...onChainData } = assignment;
+    const { count } = await supabase
+      .from("assignments")
+      .select("*", { count: "exact", head: true })
+      .eq("user_id", user.id)
+      .not("solana_index", "is", null);
+    const nextIndex = count ?? 0;
+    dualWriteCreate(user.id, DataType.Assignment, nextIndex, onChainData)
+      .then((result) => {
+        if (result) {
+          supabase.from("assignments").update({ solana_index: result.index }).eq("id", id).then(() => {});
+        }
+      })
+      .catch(console.error);
+  }
+
   return NextResponse.json({ assignment });
 }
 
@@ -86,6 +106,14 @@ export async function PUT(request: Request) {
 
   const body = await request.json();
 
+  // Get solana_index before updating
+  const { data: existing } = await supabase
+    .from("assignments")
+    .select("solana_index")
+    .eq("id", body.id)
+    .eq("user_id", user.id)
+    .single();
+
   const { error } = await supabase
     .from("assignments")
     .update({
@@ -99,6 +127,16 @@ export async function PUT(request: Request) {
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  // Update on-chain record
+  if (existing?.solana_index != null) {
+    dualWriteUpdate(user.id, DataType.Assignment, existing.solana_index, {
+      status: body.status,
+      priority: body.priority,
+      reminder_stage: body.reminder_stage,
+      ignored_count: body.ignored_count,
+    }).catch(console.error);
   }
 
   return NextResponse.json({ success: true });

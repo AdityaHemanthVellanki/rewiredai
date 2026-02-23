@@ -3,6 +3,8 @@ import { getGoogleAccessToken } from "@/lib/google/auth";
 import { fetchRecentEmails } from "@/lib/google/gmail";
 import { getAzureOpenAI } from "@/lib/azure-openai";
 import { NextResponse } from "next/server";
+import { dualWriteCreate } from "@/lib/solana/dual-write";
+import { DataType } from "@/lib/solana/constants";
 
 export async function POST() {
   const supabase = await createClient();
@@ -136,7 +138,24 @@ export async function POST() {
         .select()
         .single();
 
-      if (summary) summaries.push(summary);
+      if (summary) {
+        summaries.push(summary);
+        // Dual-write to Solana (fire-and-forget)
+        const { id: summaryId, user_id, solana_index, ...onChainData } = summary;
+        const { count } = await supabase
+          .from("email_summaries")
+          .select("*", { count: "exact", head: true })
+          .eq("user_id", user.id)
+          .not("solana_index", "is", null);
+        const nextIndex = count ?? 0;
+        dualWriteCreate(user.id, DataType.Email, nextIndex, onChainData)
+          .then((result) => {
+            if (result) {
+              supabase.from("email_summaries").update({ solana_index: result.index }).eq("id", summaryId).then(() => {});
+            }
+          })
+          .catch(console.error);
+      }
 
       // If deadline detected, auto-create assignment
       if (analysis.has_deadline && analysis.deadline_date) {

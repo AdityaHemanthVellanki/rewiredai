@@ -8,9 +8,9 @@ import {
   BookOpen,
   Calendar,
   Settings,
-  Zap,
   LogOut,
 } from "lucide-react";
+import { Logo } from "@/components/logo";
 import { cn } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/client";
 import { useRouter } from "next/navigation";
@@ -39,7 +39,7 @@ export function Sidebar() {
       {/* Logo */}
       <div className="flex h-16 items-center gap-2 border-b border-border/50 px-6">
         <div className="animate-glow-pulse rounded-lg p-1">
-          <Zap className="h-6 w-6 text-purple-500" />
+          <Logo size={28} />
         </div>
         <span className="text-xl font-bold">Rewired</span>
       </div>

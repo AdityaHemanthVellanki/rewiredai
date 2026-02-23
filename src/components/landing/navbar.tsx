@@ -3,8 +3,8 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { motion } from "motion/react";
-import { Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Logo } from "@/components/logo";
 
 export function Navbar() {
   const [scrolled, setScrolled] = useState(false);
@@ -32,7 +32,7 @@ export function Navbar() {
             whileHover={{ rotate: 180 }}
             transition={{ duration: 0.3 }}
           >
-            <Zap className="h-6 w-6 text-purple-500 transition-all group-hover:text-purple-400 group-hover:drop-shadow-[0_0_8px_rgba(168,85,247,0.5)]" />
+            <Logo size={28} className="drop-shadow-[0_0_8px_rgba(168,85,247,0.3)] transition-all group-hover:drop-shadow-[0_0_12px_rgba(168,85,247,0.5)]" />
           </motion.div>
           <span className="text-xl font-bold">Rewired</span>
         </Link>

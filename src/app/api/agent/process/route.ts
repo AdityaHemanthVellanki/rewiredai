@@ -2,6 +2,8 @@ import { createClient } from "@/lib/supabase/server";
 import { runBackgroundReasoning } from "@/lib/agent/reasoning";
 import { NextResponse } from "next/server";
 import type { Profile } from "@/types";
+import { dualWriteCreate } from "@/lib/solana/dual-write";
+import { DataType } from "@/lib/solana/constants";
 
 /**
  * Background agent processing endpoint.
@@ -86,13 +88,30 @@ export async function POST() {
 
   // Save nudges
   for (const nudge of output.nudges) {
-    await supabase.from("nudges").insert({
+    const { data: nudgeRow } = await supabase.from("nudges").insert({
       user_id: user.id,
       message: nudge.message,
       severity: nudge.severity,
       assignment_id: nudge.assignment_id || null,
       status: "pending",
-    });
+    }).select().single();
+
+    // Dual-write nudge to Solana
+    if (nudgeRow) {
+      const { id: nudgeId, user_id: _uid, solana_index: _si, assignment, ...onChainNudge } = nudgeRow;
+      const { count: nudgeCount } = await supabase
+        .from("nudges")
+        .select("*", { count: "exact", head: true })
+        .eq("user_id", user.id)
+        .not("solana_index", "is", null);
+      dualWriteCreate(user.id, DataType.Nudge, nudgeCount ?? 0, onChainNudge)
+        .then((result) => {
+          if (result) {
+            supabase.from("nudges").update({ solana_index: result.index }).eq("id", nudgeId).then(() => {});
+          }
+        })
+        .catch(console.error);
+    }
 
     // Update assignment reminder stage
     if (nudge.assignment_id) {
@@ -124,16 +143,32 @@ export async function POST() {
     const severity = alert.risk_level === "critical" ? "nuclear" as const
       : alert.risk_level === "at_risk" ? "urgent" as const
       : "firm" as const;
-    await supabase.from("nudges").insert({
+    const { data: alertRow } = await supabase.from("nudges").insert({
       user_id: user.id,
       message: alert.message,
       severity,
       status: "pending",
-    });
+    }).select().single();
+
+    if (alertRow) {
+      const { id: alertId, user_id: _uid2, solana_index: _si2, assignment: _a, ...onChainAlert } = alertRow;
+      const { count: alertCount } = await supabase
+        .from("nudges")
+        .select("*", { count: "exact", head: true })
+        .eq("user_id", user.id)
+        .not("solana_index", "is", null);
+      dualWriteCreate(user.id, DataType.Nudge, alertCount ?? 0, onChainAlert)
+        .then((result) => {
+          if (result) {
+            supabase.from("nudges").update({ solana_index: result.index }).eq("id", alertId).then(() => {});
+          }
+        })
+        .catch(console.error);
+    }
   }
 
   // Log agent activity with full intelligence data
-  await supabase.from("agent_activity_log").insert({
+  const { data: activityRow } = await supabase.from("agent_activity_log").insert({
     user_id: user.id,
     action: "background_reasoning",
     description: `Generated ${output.nudges.length} nudges, ${output.gradeAlerts.length} grade alerts, ${output.gradeCliffs.length} grade cliffs, ${output.insights.length} insights | Procrastination: ${output.procrastinationScore}/100 | Burnout: ${output.burnoutRisk}${output.semesterProjection ? ` | Projected GPA: ${output.semesterProjection.projected_gpa}` : ""}`,
@@ -147,7 +182,24 @@ export async function POST() {
       burnoutRisk: output.burnoutRisk,
       semesterProjection: output.semesterProjection,
     },
-  });
+  }).select().single();
+
+  // Dual-write activity log to Solana
+  if (activityRow) {
+    const { id: actId, user_id: _uid3, solana_index: _si3, ...onChainActivity } = activityRow;
+    const { count: actCount } = await supabase
+      .from("agent_activity_log")
+      .select("*", { count: "exact", head: true })
+      .eq("user_id", user.id)
+      .not("solana_index", "is", null);
+    dualWriteCreate(user.id, DataType.Activity, actCount ?? 0, onChainActivity)
+      .then((result) => {
+        if (result) {
+          supabase.from("agent_activity_log").update({ solana_index: result.index }).eq("id", actId).then(() => {});
+        }
+      })
+      .catch(console.error);
+  }
 
   return NextResponse.json(output);
 }

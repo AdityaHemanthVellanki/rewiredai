@@ -568,7 +568,11 @@ export default function ChatPage() {
               const isStreaming = isLast && msg.role === "assistant" && isLoading;
 
               // Hide the auto-brief user message (it's system-initiated)
-              if (msg.isAutoBrief && isUser) return null;
+              const isAutoBrief = msg.isAutoBrief || (isUser && msg.content?.startsWith("Give me a full status briefing"));
+              if (isAutoBrief && isUser) return null;
+
+              // Skip assistant messages with no real content (empty/whitespace-only)
+              if (!isUser && !msg.content?.trim() && !isStreaming) return null;
 
               return (
                 <div key={msg.id}>

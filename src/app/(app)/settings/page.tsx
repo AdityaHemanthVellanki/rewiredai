@@ -14,6 +14,10 @@ import {
   Calendar,
   Trash2,
   ExternalLink,
+  Wallet,
+  Copy,
+  Zap,
+  Database,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -77,6 +81,13 @@ function SettingsContent() {
   const [canvasUrl, setCanvasUrl] = useState("https://umamherst.instructure.com");
   const [canvasToken, setCanvasToken] = useState("");
 
+  // Solana wallet state
+  const [walletConnected, setWalletConnected] = useState(false);
+  const [walletAddress, setWalletAddress] = useState<string | null>(null);
+  const [isInitializingChain, setIsInitializingChain] = useState(false);
+  const [isSyncingChain, setIsSyncingChain] = useState(false);
+  const [walletInput, setWalletInput] = useState("");
+
   useEffect(() => {
     async function load() {
       try {
@@ -88,6 +99,8 @@ function SettingsContent() {
           setGoogleEmail(data.googleEmail);
           setCanvasConnected(data.canvasConnected);
           setCanvasInfo(data.canvasInfo);
+          setWalletConnected(data.walletConnected || false);
+          setWalletAddress(data.walletAddress || null);
         }
       } catch {
         toast.error("Failed to load settings");
@@ -208,6 +221,83 @@ function SettingsContent() {
       toast.error("Failed to sync emails");
     } finally {
       setIsSyncingEmails(false);
+    }
+  }
+
+  async function connectWallet() {
+    if (!walletInput || walletInput.length < 32) {
+      toast.error("Please enter a valid Solana wallet address.");
+      return;
+    }
+    try {
+      const res = await fetch("/api/solana/wallet", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wallet_address: walletInput }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setWalletConnected(true);
+        setWalletAddress(walletInput);
+        setWalletInput("");
+        toast.success("Wallet linked!");
+      } else {
+        toast.error(data.error || "Failed to link wallet");
+      }
+    } catch {
+      toast.error("Failed to link wallet");
+    }
+  }
+
+  async function disconnectWallet() {
+    try {
+      await fetch("/api/solana/wallet", { method: "DELETE" });
+      setWalletConnected(false);
+      setWalletAddress(null);
+      toast.success("Wallet disconnected");
+    } catch {
+      toast.error("Failed to disconnect wallet");
+    }
+  }
+
+  async function initializeOnChain() {
+    setIsInitializingChain(true);
+    try {
+      const res = await fetch("/api/solana/init", { method: "POST" });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        toast.success(data.message || "On-chain profile initialized!");
+      } else {
+        toast.error(data.error || "Initialization failed");
+      }
+    } catch {
+      toast.error("Failed to initialize on-chain profile");
+    } finally {
+      setIsInitializingChain(false);
+    }
+  }
+
+  async function syncToChain() {
+    setIsSyncingChain(true);
+    try {
+      const res = await fetch("/api/solana/sync", { method: "POST" });
+      const data = await res.json();
+      if (res.ok) {
+        toast.success(`Synced ${data.synced} records to Solana devnet`);
+      } else {
+        toast.error(data.error || "Sync failed");
+      }
+    } catch {
+      toast.error("Failed to sync to blockchain");
+    } finally {
+      setIsSyncingChain(false);
+    }
+  }
+
+  function copyAddress() {
+    if (walletAddress) {
+      navigator.clipboard.writeText(walletAddress);
+      toast.success("Wallet address copied!");
     }
   }
 
@@ -412,6 +502,118 @@ function SettingsContent() {
                           </div>
                         )}
                         Connect
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+              {/* Solana Blockchain */}
+              <div className="group rounded-lg border border-border/50 p-4 transition-all hover:border-border/80 hover:bg-white/[0.01]">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-6 w-6 items-center justify-center rounded bg-gradient-to-br from-purple-500 to-green-400">
+                      <Wallet className="h-3.5 w-3.5 text-white" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium">Solana Blockchain</p>
+                      <p className="text-xs text-muted-foreground">
+                        {walletConnected
+                          ? `Linked: ${walletAddress?.slice(0, 4)}...${walletAddress?.slice(-4)}`
+                          : "Store your data on-chain (devnet)"}
+                      </p>
+                    </div>
+                  </div>
+                  {walletConnected ? (
+                    <Badge className="bg-green-500/10 text-green-400 gap-1.5">
+                      <span className="relative flex h-2 w-2">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
+                        <span className="relative inline-flex h-2 w-2 rounded-full bg-green-400" />
+                      </span>
+                      Connected
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline" className="text-muted-foreground">
+                      Not connected
+                    </Badge>
+                  )}
+                </div>
+
+                {walletConnected ? (
+                  <div className="mt-3 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <code className="rounded bg-white/5 px-2 py-0.5 text-xs font-mono text-muted-foreground">
+                        {walletAddress}
+                      </code>
+                      <button onClick={copyAddress} className="text-muted-foreground hover:text-foreground transition-colors">
+                        <Copy className="h-3 w-3" />
+                      </button>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        onClick={initializeOnChain}
+                        disabled={isInitializingChain}
+                        variant="outline"
+                        size="sm"
+                        className="gap-2 active-press"
+                      >
+                        {isInitializingChain ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Zap className="h-3 w-3" />
+                        )}
+                        Init Profile
+                      </Button>
+                      <Button
+                        onClick={syncToChain}
+                        disabled={isSyncingChain}
+                        variant="outline"
+                        size="sm"
+                        className="gap-2 active-press"
+                      >
+                        {isSyncingChain ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Database className="h-3 w-3" />
+                        )}
+                        Sync All
+                      </Button>
+                      <Button
+                        onClick={disconnectWallet}
+                        variant="outline"
+                        size="sm"
+                        className="gap-2 text-muted-foreground transition-colors hover:text-red-400 hover:border-red-500/30 hover:bg-red-500/5 active-press"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                        Disconnect
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-3 space-y-3">
+                    <Input
+                      value={walletInput}
+                      onChange={(e) => setWalletInput(e.target.value)}
+                      placeholder="Paste your Solana wallet address"
+                      className="text-sm font-mono"
+                    />
+                    <div className="flex items-center justify-between">
+                      <a
+                        href="https://phantom.app/"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300 transition-colors"
+                      >
+                        Get Phantom Wallet
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                      <Button
+                        onClick={connectWallet}
+                        disabled={!walletInput}
+                        size="sm"
+                        className="gap-2 bg-gradient-to-r from-purple-600 to-green-500 hover:from-purple-700 hover:to-green-600 text-white active-press"
+                      >
+                        <Wallet className="h-3 w-3" />
+                        Link Wallet
                       </Button>
                     </div>
                   </div>

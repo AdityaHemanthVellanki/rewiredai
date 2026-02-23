@@ -2,8 +2,8 @@
 
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
-import { Zap } from "lucide-react";
 import Link from "next/link";
+import { Logo } from "@/components/logo";
 
 export default function LoginPage() {
   const handleGoogleLogin = async () => {
@@ -29,7 +29,7 @@ export default function LoginPage() {
         <div className="rounded-2xl border border-border/50 bg-card p-8">
           <div className="mb-8 text-center">
             <Link href="/" className="mb-4 inline-flex items-center gap-2">
-              <Zap className="h-8 w-8 text-purple-500" />
+              <Logo size={32} />
               <span className="text-2xl font-bold">Rewired</span>
             </Link>
             <p className="mt-2 text-muted-foreground">

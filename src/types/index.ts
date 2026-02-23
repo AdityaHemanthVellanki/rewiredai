@@ -46,6 +46,7 @@ export interface Course {
   syllabus_url: string | null;
   color: string;
   grading_rubric: GradingWeight[];
+  solana_index?: number | null;
   created_at: string;
 }
 
@@ -75,6 +76,7 @@ export interface Assignment {
   ignored_count: number;
   confidence_score: number | null;
   canvas_assignment_id: number | null;
+  solana_index?: number | null;
   created_at: string;
   // joined
   course?: Course;
@@ -91,6 +93,7 @@ export interface Grade {
   max_score: number | null;
   weight: number | null;
   agent_feedback: string | null;
+  solana_index?: number | null;
   created_at: string;
   // joined
   course?: Course;
@@ -109,6 +112,7 @@ export interface StudyBlock {
   end_time: string;
   google_event_id: string | null;
   status: StudyBlockStatus;
+  solana_index?: number | null;
   created_at: string;
   // joined
   course?: Course;
@@ -122,6 +126,7 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   metadata: Record<string, unknown> | null;
+  solana_index?: number | null;
   created_at: string;
 }
 
@@ -134,6 +139,7 @@ export interface AgentMemory {
   key: string;
   value: Record<string, unknown>;
   category: MemoryCategory;
+  solana_index?: number | null;
   updated_at: string;
 }
 
@@ -149,6 +155,7 @@ export interface Nudge {
   severity: NudgeSeverity;
   status: NudgeStatus;
   escalation_count: number;
+  solana_index?: number | null;
   created_at: string;
   sent_at: string | null;
   // joined
@@ -163,6 +170,7 @@ export interface MoodEntry {
   free_text: string | null;
   agent_response: string | null;
   triggered_support_mode: boolean;
+  solana_index?: number | null;
   created_at: string;
 }
 
@@ -189,6 +197,7 @@ export interface EmailSummary {
   action_due_date: string | null;
   is_handled: boolean;
   received_at: string;
+  solana_index?: number | null;
   created_at: string;
 }
 
@@ -199,6 +208,15 @@ export interface AgentActivity {
   action: string;
   description: string;
   metadata: Record<string, unknown> | null;
+  solana_index?: number | null;
+  created_at: string;
+}
+
+// --- Solana Wallet Link ---
+export interface WalletLink {
+  id: string;
+  user_id: string;
+  wallet_address: string;
   created_at: string;
 }
 

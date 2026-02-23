@@ -242,12 +242,13 @@ export async function POST(request: Request) {
           }
         }
 
-        // Save assistant response
-        if (fullResponse) {
+        // Save assistant response (only if there's real content)
+        const trimmedResponse = fullResponse.trim();
+        if (trimmedResponse) {
           await supabase.from("chat_messages").insert({
             user_id: user.id,
             role: "assistant",
-            content: fullResponse,
+            content: trimmedResponse,
           });
         }
 
@@ -543,6 +544,7 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
 
       // Sync to Google Calendar (default true)
       let calendarEventId = null;
+      let calendarSyncError: string | null = null;
       const shouldSync = args.sync_to_google !== false;
       if (shouldSync && data) {
         try {
@@ -560,9 +562,11 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
               .from("study_blocks")
               .update({ google_event_id: calEvent.id })
               .eq("id", data.id);
+          } else {
+            calendarSyncError = "Google account not connected — study block created but not synced to Google Calendar.";
           }
-        } catch {
-          // Non-critical: calendar sync failed but study block was created
+        } catch (err) {
+          calendarSyncError = `Calendar sync failed: ${err instanceof Error ? err.message : "unknown error"}. Study block was created but may not appear on Google Calendar.`;
         }
       }
 
@@ -570,6 +574,7 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
         created: true,
         studyBlock: data,
         google_calendar_synced: !!calendarEventId,
+        ...(calendarSyncError ? { calendar_sync_error: calendarSyncError } : {}),
       };
     }
 
@@ -622,6 +627,7 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
 
       // If time changed and it's synced to Google, update the Google event too
       const newTitle = (updates.title as string) || existing.title;
+      let updateSyncError: string | null = null;
       if ((args.start_time || args.end_time || updates.title) && existing.google_event_id) {
         try {
           const accessToken = await getGoogleAccessToken(userId);
@@ -638,13 +644,19 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
               .from("study_blocks")
               .update({ google_event_id: calEvent.id })
               .eq("id", resolvedBlockId);
+          } else {
+            updateSyncError = "Google account not connected — study block updated but Google Calendar not synced.";
           }
-        } catch {
-          // Non-critical
+        } catch (err) {
+          updateSyncError = `Google Calendar sync failed: ${err instanceof Error ? err.message : "unknown error"}`;
         }
       }
 
-      return { updated: true, message: "Study block updated." };
+      return {
+        updated: true,
+        message: "Study block updated.",
+        ...(updateSyncError ? { calendar_sync_error: updateSyncError } : {}),
+      };
     }
 
     case "delete_study_block": {
@@ -682,14 +694,17 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
       }
 
       // Delete from Google Calendar if synced
+      let deleteSyncError: string | null = null;
       if (block.google_event_id) {
         try {
           const accessToken = await getGoogleAccessToken(userId);
           if (accessToken) {
             await deleteCalendarEvent(accessToken, block.google_event_id);
+          } else {
+            deleteSyncError = "Google account not connected — study block deleted but Google Calendar event may remain.";
           }
-        } catch {
-          // Non-critical
+        } catch (err) {
+          deleteSyncError = `Google Calendar sync failed: ${err instanceof Error ? err.message : "unknown error"}. The study block was deleted but the Google Calendar event may remain.`;
         }
       }
 
@@ -699,7 +714,11 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
         .eq("id", deleteBlockId)
         .eq("user_id", userId);
 
-      return { deleted: true, message: "Study block deleted." };
+      return {
+        deleted: true,
+        message: "Study block deleted.",
+        ...(deleteSyncError ? { calendar_sync_error: deleteSyncError } : {}),
+      };
     }
 
     case "create_google_calendar_event": {
@@ -718,7 +737,7 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
 
         return {
           created: true,
-          event_id: calEvent.id,
+          event: { id: calEvent.id, title: calEvent.summary },
           message: `Created "${args.title}" on Google Calendar.`,
         };
       } catch (err) {
@@ -1172,7 +1191,7 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
 
       const peakHours = profileData?.productivity_peak_hours || ["09:00", "10:00", "14:00", "15:00"];
       const sleepWindow = profileData?.sleep_window || { sleep: "23:00", wake: "08:00" };
-      const created: Array<{ id: string; title: string; start: string; end: string }> = [];
+      const created: Array<{ id: string; title: string; start: string; end: string; google_synced?: boolean }> = [];
 
       // Build a unified busy-times list from study blocks + Google Calendar
       const busyTimes: Array<{ start: number; end: number }> = [];
@@ -1255,6 +1274,7 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
                   title,
                   start: blockStart.toISOString(),
                   end: blockEnd.toISOString(),
+                  google_synced: false,
                 });
 
                 // Sync to Google Calendar
@@ -1272,9 +1292,10 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
                       .from("study_blocks")
                       .update({ google_event_id: calEvent.id })
                       .eq("id", newBlock.id);
+                    created[created.length - 1].google_synced = true;
                   }
                 } catch {
-                  // Non-critical
+                  // Calendar sync failed for this block but study block was created
                 }
               }
               break; // Move to next assignment after scheduling one block
@@ -1283,13 +1304,15 @@ async function executeToolCall(name: string, args: any, userId: string, supabase
         }
       }
 
+      const syncedCount = created.filter(c => c.google_synced).length;
       return {
         scheduled: created.length,
         blocks: created,
         google_events_checked: googleEvents.length,
+        google_calendar_synced: syncedCount,
         message:
           created.length > 0
-            ? `Scheduled ${created.length} study block(s) around your existing ${googleEvents.length} calendar events.`
+            ? `Scheduled ${created.length} study block(s) around your existing ${googleEvents.length} calendar events.${syncedCount < created.length ? ` Warning: ${created.length - syncedCount} block(s) failed to sync to Google Calendar.` : ""}`
             : "Could not find available time slots that don't conflict with your existing calendar. Try adjusting your peak hours in Settings or ask me to schedule at a specific time.",
       };
     }

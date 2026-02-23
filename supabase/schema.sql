@@ -285,6 +285,36 @@ drop policy if exists "Users can view own agent activity" on agent_activity_log;
 create policy "Users can view own agent activity" on agent_activity_log for all using (auth.uid() = user_id);
 
 -- ============================================
+-- Solana Wallet Links
+-- ============================================
+
+create table if not exists wallet_links (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references profiles(id) on delete cascade not null unique,
+  wallet_address text not null unique,
+  created_at timestamptz default now()
+);
+
+alter table wallet_links enable row level security;
+drop policy if exists "Users can manage own wallet links" on wallet_links;
+create policy "Users can manage own wallet links" on wallet_links for all using (auth.uid() = user_id);
+
+-- ============================================
+-- Solana index columns (maps Supabase rows to on-chain PDA indexes)
+-- ============================================
+
+alter table courses add column if not exists solana_index int;
+alter table assignments add column if not exists solana_index int;
+alter table grades add column if not exists solana_index int;
+alter table study_blocks add column if not exists solana_index int;
+alter table chat_messages add column if not exists solana_index int;
+alter table email_summaries add column if not exists solana_index int;
+alter table nudges add column if not exists solana_index int;
+alter table mood_entries add column if not exists solana_index int;
+alter table agent_memory add column if not exists solana_index int;
+alter table agent_activity_log add column if not exists solana_index int;
+
+-- ============================================
 -- Indexes for performance
 -- ============================================
 

@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { NextResponse } from "next/server";
+import { dualWriteUpdateStudent } from "@/lib/solana/dual-write";
 
 export async function GET() {
   const supabase = await createClient();
@@ -28,12 +29,20 @@ export async function GET() {
     .eq("user_id", user.id)
     .single();
 
+  const { data: walletLink } = await supabase
+    .from("wallet_links")
+    .select("wallet_address, created_at")
+    .eq("user_id", user.id)
+    .single();
+
   return NextResponse.json({
     profile,
     googleConnected: (googleAccounts || []).length > 0,
     googleEmail: googleAccounts?.[0]?.google_email || null,
     canvasConnected: !!canvasConn,
     canvasInfo: canvasConn || null,
+    walletConnected: !!walletLink,
+    walletAddress: walletLink?.wallet_address || null,
   });
 }
 
@@ -70,6 +79,9 @@ export async function PUT(request: Request) {
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+
+  // Update on-chain student profile (fire-and-forget)
+  dualWriteUpdateStudent(user.id, body.full_name || null, null).catch(console.error);
 
   return NextResponse.json({ success: true });
 }
