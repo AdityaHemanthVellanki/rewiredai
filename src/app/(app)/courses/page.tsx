@@ -3,11 +3,9 @@
 import { useState, useEffect } from "react";
 import {
   Plus,
-  Upload,
   BookOpen,
   Loader2,
   Trash2,
-  CheckCircle2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -42,8 +40,6 @@ export default function CoursesPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isAdding, setIsAdding] = useState(false);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
-  const [uploadingCourseId, setUploadingCourseId] = useState<string | null>(null);
-  const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
   const [newCourse, setNewCourse] = useState({
     name: "",
     code: "",
@@ -110,37 +106,6 @@ export default function CoursesPage() {
       }
     } catch {
       toast.error("Failed to delete course");
-    }
-  }
-
-  async function handleSyllabusUpload(courseId: string, file: File) {
-    setUploadingCourseId(courseId);
-    setUploadSuccess(null);
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("course_id", courseId);
-
-      const res = await fetch("/api/syllabus/parse", {
-        method: "POST",
-        body: formData,
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        setUploadSuccess(courseId);
-        toast.success(
-          `Parsed ${data.deadlines_created} deadlines from syllabus!`
-        );
-        setTimeout(() => setUploadSuccess(null), 3000);
-        fetchCourses();
-      } else {
-        toast.error("Failed to parse syllabus");
-      }
-    } catch {
-      toast.error("Failed to upload syllabus");
-    } finally {
-      setUploadingCourseId(null);
     }
   }
 
@@ -351,36 +316,6 @@ export default function CoursesPage() {
                         </Badge>
                       </div>
 
-                      {/* Syllabus upload */}
-                      <label
-                        className={`flex cursor-pointer items-center gap-2 rounded-lg border border-dashed p-3 text-sm transition-all duration-200 ${
-                          uploadSuccess === course.id
-                            ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-400"
-                            : "border-border/50 text-muted-foreground hover:border-purple-500/30 hover:bg-purple-500/5"
-                        }`}
-                      >
-                        {uploadSuccess === course.id ? (
-                          <CheckCircle2 className="h-4 w-4 text-emerald-400" />
-                        ) : uploadingCourseId === course.id ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <Upload className="h-4 w-4 transition-transform group-hover:scale-110" />
-                        )}
-                        {uploadSuccess === course.id
-                          ? "Syllabus parsed!"
-                          : uploadingCourseId === course.id
-                            ? "Parsing syllabus..."
-                            : "Upload Syllabus PDF"}
-                        <input
-                          type="file"
-                          accept=".pdf"
-                          className="hidden"
-                          onChange={(e) => {
-                            const file = e.target.files?.[0];
-                            if (file) handleSyllabusUpload(course.id, file);
-                          }}
-                        />
-                      </label>
                     </CardContent>
                   </Card>
                 </motion.div>
